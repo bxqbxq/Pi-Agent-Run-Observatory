@@ -1,0 +1,1 @@
+{"id":"test-organization","prompt":"整理测试文件中的重复断言辅助逻辑，但不要改变测试语义。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["maintenance"]}

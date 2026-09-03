@@ -1,0 +1,1 @@
+{"id":"readme","prompt":"为这个 fixture 添加 README，说明 API 和测试命令，不修改代码。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["documentation"]}

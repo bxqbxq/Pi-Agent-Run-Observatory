@@ -1,0 +1,1 @@
+{"id":"add-validation","prompt":"为 add 函数增加参数校验，拒绝非数字输入，并更新测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["backend"]}

@@ -1,0 +1,4 @@
+[
+  { "id": "baseline", "model": "provider/model-a", "thinking": "medium" },
+  { "id": "candidate", "model": "provider/model-b", "thinking": "medium" }
+]

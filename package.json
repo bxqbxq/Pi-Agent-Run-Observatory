@@ -1,0 +1,25 @@
+{
+  "name": "pi-run-review",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privacy-first run diagnosis and evaluation for pi main-agent sessions",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/run-review.ts"]
+  },
+  "scripts": {
+    "eval": "tsx eval/run.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

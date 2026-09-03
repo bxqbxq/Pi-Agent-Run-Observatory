@@ -1,0 +1,1 @@
+{"id":"add-average","prompt":"新增 average 函数并为其编写测试，避免改变已有导出。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["feature"]}

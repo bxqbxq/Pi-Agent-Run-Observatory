@@ -1,0 +1,1 @@
+{"id":"error-message","prompt":"为 add 的非法输入设计稳定的错误类型或错误消息，并添加测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["errors"]}

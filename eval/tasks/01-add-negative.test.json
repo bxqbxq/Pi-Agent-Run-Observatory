@@ -1,0 +1,1 @@
+{"id":"add-negative","prompt":"为 add 函数增加负数测试并确保实现正确。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["testing"]}

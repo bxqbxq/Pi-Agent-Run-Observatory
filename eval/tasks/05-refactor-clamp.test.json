@@ -1,0 +1,1 @@
+{"id":"refactor-clamp","prompt":"重构 clamp 的实现以提高可读性，并保持全部测试通过。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["refactor"]}
