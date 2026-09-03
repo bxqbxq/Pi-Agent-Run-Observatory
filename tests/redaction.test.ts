@@ -14,3 +14,8 @@ test("对象脱敏敏感字段", () => {
   assert.equal(output.apiKey, "<redacted>");
   assert.deepEqual(output.nested, { password: "<redacted>", ok: "yes" });
 });
+
+test("未提供长度限制时保留完整脱敏文本", () => {
+  const input = "x".repeat(1200);
+  assert.equal(redactText(input).length, 1200);
+});

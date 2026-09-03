@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -36,8 +36,8 @@ function now(): string {
 }
 
 function textSummary(value: unknown, config: Config, cwd: string): string {
-  if (config.captureFullContent) return redactText(String(value ?? ""), { cwd, maxChars: config.summaryMaxChars ?? 1000 });
-  return redactText(String(value ?? ""), { cwd, maxChars: config.summaryMaxChars ?? 1000 });
+  const maxChars = config.captureFullContent ? undefined : config.summaryMaxChars ?? 1000;
+  return redactText(String(value ?? ""), { cwd, maxChars });
 }
 
 function modelName(model: unknown): string | undefined {
@@ -60,9 +60,19 @@ async function loadConfig(cwd: string): Promise<Config> {
   try {
     const raw = await readFile(join(cwd, ".pi", "run-review", "config.json"), "utf8");
     return JSON.parse(raw) as Config;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`pi-run-review: config ignored: ${String(error)}`);
     return {};
   }
+}
+
+async function latestReportPath(cwd: string, storageDir?: string): Promise<string | undefined> {
+  const dir = join(cwd, storageDir ?? ".pi/run-review", "reports");
+  try {
+    const files = (await readdir(dir)).filter((file) => file.endsWith(".json"));
+    const candidates = await Promise.all(files.map(async (file) => ({ path: join(dir, file), mtime: (await stat(join(dir, file))).mtimeMs })));
+    return candidates.sort((a, b) => b.mtime - a.mtime)[0]?.path;
+  } catch { return undefined; }
 }
 
 export default function runReviewExtension(pi: ExtensionAPI): void {
@@ -93,9 +103,11 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     config = await loadConfig(ctx.cwd);
+    lastReportPath = await latestReportPath(ctx.cwd, config.storageDir);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
+    if (active) return;
     const baseDir = config.storageDir ? join(ctx.cwd, config.storageDir) : join(ctx.cwd, ".pi", "run-review");
     const runId = `run_${randomUUID()}`;
     const startedAt = now();
@@ -127,6 +139,18 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     await append(makeEvent("turn_ended", { turnIndex: event.turnIndex, toolResultCount: event.toolResults.length }));
   });
 
+  pi.on("agent_end", async (event) => {
+    await append(makeEvent("agent_ended", { messageCount: event.messages.length }));
+  });
+
+  pi.on("tool_call", async (event, ctx) => {
+    await append(makeEvent("tool_call", { toolName: event.toolName, input: redactValue(event.input, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }) }, { toolCallId: event.toolCallId }));
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    await append(makeEvent("tool_result", { toolName: event.toolName, isError: event.isError, content: textSummary(event.content, config, ctx.cwd), usage: redactValue(event.usage, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }) }, { toolCallId: event.toolCallId }));
+  });
+
   pi.on("tool_execution_start", async (event, ctx) => {
     if (!active) return;
     active.summary.toolCount += 1;
@@ -150,12 +174,12 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     const args = active?.toolArgs.get(event.toolCallId);
     active?.toolStarts.delete(event.toolCallId);
     active?.toolArgs.delete(event.toolCallId);
-    const result = event.result as { exitCode?: number; code?: number; status?: number } | undefined;
+    const result = event.result as { exitCode?: number; code?: number; details?: { exitCode?: number; code?: number } } | undefined;
     await append(makeEvent("tool_finished", {
       toolName: event.toolName,
       args: redactValue(args, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }),
       isError: event.isError,
-      exitCode: result?.exitCode ?? result?.code,
+      exitCode: result?.exitCode ?? result?.code ?? result?.details?.exitCode ?? result?.details?.code,
       durationMs: started ? Date.now() - started : undefined,
       resultSummary: textSummary(event.result, config, ctx.cwd),
     }, { toolCallId: event.toolCallId }));
@@ -177,8 +201,12 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     await append(makeEvent("model_selected", { model: modelName(event.model), source: event.source }));
   });
 
+  pi.on("before_provider_request", async (event) => {
+    await append(makeEvent("provider_request", { payload: redactValue(event.payload, { maxChars: config.summaryMaxChars ?? 1000 }) }));
+  });
+
   pi.on("after_provider_response", async (event) => {
-    await append(makeEvent("provider_response", { status: event.status }));
+    await append(makeEvent("provider_response", { status: event.status, headers: redactValue(event.headers, { maxChars: config.summaryMaxChars ?? 1000 }) }));
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -215,26 +243,34 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
   pi.registerCommand("run-review", {
     description: "Review the latest settled pi Agent run",
     handler: async (args, ctx) => {
-      if (!lastReportPath) {
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const requestedRun = tokens.indexOf("--run") >= 0 ? tokens[tokens.indexOf("--run") + 1] : undefined;
+      const formatIndex = tokens.indexOf("--format");
+      const format = formatIndex >= 0 ? tokens[formatIndex + 1] : "markdown";
+      const reportPath = requestedRun && lastReportPath ? join(dirname(lastReportPath), `${requestedRun}.json`) : lastReportPath;
+      if (!reportPath) {
         ctx.ui.notify("当前还没有可评审的 settled run。", "warning");
         return;
       }
-      if (args.trim() === "--explain") {
+      if (tokens.includes("--explain")) {
         try {
-          const raw = await readFile(lastReportPath, "utf8");
+          const raw = await readFile(reportPath, "utf8");
           const report = JSON.parse(raw) as import("../src/schema.js").RunReport;
           const model = ctx.model;
           if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
             ctx.ui.notify("当前模型不可用于 explain，已跳过 LLM 调用。", "warning");
           } else {
-            const evidence = report.findings.map((item) => ({ ruleId: item.ruleId, confidence: item.confidence, evidence: item.evidence, trigger: item.trigger, recommendation: item.recommendation }));
+            const eventsPath = join(dirname(dirname(reportPath)), "events.jsonl");
+            const events = await readEvents(eventsPath);
+            const evidence = { run: report.run, outcome: report.outcome, findings: report.findings, events: events.filter((event) => report.findings.some((item) => item.evidence.includes(event.eventId))).map((event) => ({ eventId: event.eventId, type: event.type, toolCallId: event.toolCallId, payload: event.payload })) };
             const response = await ctx.modelRegistry.complete(model, {
               messages: [{ role: "user", content: [{ type: "text", text: `请根据以下脱敏后的 Agent 运行诊断证据，解释最可能的根因并给出修复建议。不要引入证据中不存在的事实。\n\n${JSON.stringify(evidence)}` }], timestamp: Date.now() }],
             }, { cacheRetention: "none", sessionId: randomUUID() });
             const text = response.content.filter((item): item is { type: "text"; text: string } => item.type === "text").map((item) => item.text).join("\n").trim();
             report.explanation = { generatedAt: now(), model: modelName(model), text };
-            await writeReport(lastReportPath, report);
-            const reportDir = dirname(lastReportPath);
+            await appendEvent(eventsPath, { schemaVersion: 1, eventId: `evt_${randomUUID()}`, runId: report.run.runId, sessionId: report.run.sessionId, timestamp: now(), type: "analysis", payload: { kind: "llm_explain", model: modelName(model) } });
+            await writeReport(reportPath, report);
+            const reportDir = dirname(reportPath);
             const markdown = renderMarkdown(report);
             await writeFile(join(reportDir, `${report.run.runId}.md`), markdown, "utf8");
             await writeFile(join(reportDir, `${report.run.runId}.html`), renderHtml(report), "utf8");
@@ -244,7 +280,39 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
           ctx.ui.notify(`LLM explain 失败：${String(error)}`, "warning");
         }
       }
-      ctx.ui.notify(lastMarkdown, "info");
+      const raw = await readFile(reportPath, "utf8");
+      const report = JSON.parse(raw) as import("../src/schema.js").RunReport;
+      const output = format === "json" ? raw : format === "html" ? renderHtml(report) : renderMarkdown(report);
+      ctx.ui.notify(output, "info");
+    },
+  });
+
+  pi.registerCommand("run-diff", {
+    description: "Compare two persisted run-review reports",
+    handler: async (args, ctx) => {
+      const [baseline, candidate] = args.trim().split(/\s+/);
+      if (!baseline || !candidate) {
+        ctx.ui.notify("用法：/run-diff <baselineRunId> <candidateRunId>", "warning");
+        return;
+      }
+      const reportDir = lastReportPath ? dirname(lastReportPath) : join(ctx.cwd, config.storageDir ?? ".pi/run-review", "reports");
+      try {
+        const [left, right] = await Promise.all([
+          readFile(join(reportDir, `${baseline}.json`), "utf8").then((value) => JSON.parse(value) as import("../src/schema.js").RunReport),
+          readFile(join(reportDir, `${candidate}.json`), "utf8").then((value) => JSON.parse(value) as import("../src/schema.js").RunReport),
+        ]);
+        const result = {
+          baseline,
+          candidate,
+          status: { baseline: left.outcome.status, candidate: right.outcome.status },
+          findingCount: { baseline: left.findings.length, candidate: right.findings.length },
+          verification: { baseline: left.outcome.verification, candidate: right.outcome.verification },
+          durationMs: { baseline: left.run.durationMs ?? null, candidate: right.run.durationMs ?? null },
+        };
+        ctx.ui.notify(JSON.stringify(result, null, 2), "info");
+      } catch (error) {
+        ctx.ui.notify(`读取 run-diff 报告失败：${String(error)}`, "warning");
+      }
     },
   });
 }

@@ -1,7 +1,8 @@
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import type { RunReport } from "./schema.js";
 
 export interface EvalTask {
   id: string;
@@ -27,7 +28,7 @@ export interface EvalResult {
   durationMs: number;
   piExitCode: number | null;
   validations: Array<{ command: string; exitCode: number | null; passed: boolean; output: string }>;
-  reportPath?: string;
+  report?: RunReport;
   error?: string;
 }
 
@@ -60,13 +61,12 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
   });
 }
 
-async function findLatestReport(workspace: string): Promise<string | undefined> {
+async function readLatestReport(workspace: string): Promise<RunReport | undefined> {
   const reportsDir = join(workspace, ".pi", "run-review", "reports");
   try {
-    const { readdir, stat } = await import("node:fs/promises");
     const candidates = await Promise.all((await readdir(reportsDir)).filter((file) => file.endsWith(".json")).map(async (file) => ({ file, mtime: (await stat(join(reportsDir, file))).mtimeMs })));
     const latest = candidates.sort((a, b) => b.mtime - a.mtime)[0];
-    return latest ? join(reportsDir, latest.file) : undefined;
+    return latest ? JSON.parse(await readFile(join(reportsDir, latest.file), "utf8")) as RunReport : undefined;
   } catch {
     return undefined;
   }
@@ -77,6 +77,12 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
   const workspace = await mkdtemp(join(tmpdir(), `pi-run-review-${task.id}-`));
   try {
     await cp(resolve(options.rootDir, task.fixture), workspace, { recursive: true });
+    // Materialize a deterministic local baseline so every task starts from a Git commit.
+    await runProcess("git", ["init"], workspace, 30_000);
+    await runProcess("git", ["config", "user.email", "pi-run-review@example.invalid"], workspace, 30_000);
+    await runProcess("git", ["config", "user.name", "pi-run-review"], workspace, 30_000);
+    await runProcess("git", ["add", "."], workspace, 30_000);
+    await runProcess("git", ["commit", "-m", "fixture baseline"], workspace, 30_000);
     const piCommand = process.platform === "win32" ? "pi.cmd" : "pi";
     const args = ["-p", "--no-session", "--no-extensions", "-e", resolve(options.extensionPath)];
     if (config.provider) args.push("--provider", config.provider);
@@ -93,7 +99,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       }
     }
     const status = piResult.timedOut ? "timeout" : piResult.exitCode !== 0 ? "error" : validations.every((item) => item.passed) ? "success" : "failed";
-    return { taskId: task.id, configId: config.id, status, durationMs: Date.now() - startedAt, piExitCode: piResult.exitCode, validations, reportPath: await findLatestReport(workspace), error: status === "error" ? piResult.output : undefined };
+    return { taskId: task.id, configId: config.id, status, durationMs: Date.now() - startedAt, piExitCode: piResult.exitCode, validations, report: await readLatestReport(workspace), error: status === "error" ? piResult.output : undefined };
   } finally {
     if (!options.keepWorkspace) await rm(workspace, { recursive: true, force: true });
   }
@@ -103,7 +109,21 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
   const configs = [...new Set(results.map((item) => item.configId))];
   const byConfig = Object.fromEntries(configs.map((configId) => {
     const selected = results.filter((item) => item.configId === configId);
-    return [configId, { runs: selected.length, successRate: selected.filter((item) => item.status === "success").length / selected.length, failedRate: selected.filter((item) => item.status === "failed" || item.status === "error").length / selected.length, timeoutRate: selected.filter((item) => item.status === "timeout").length / selected.length, averageDurationMs: Math.round(selected.reduce((sum, item) => sum + item.durationMs, 0) / selected.length) }];
+    const sortedDurations = selected.map((item) => item.durationMs).sort((a, b) => a - b);
+    const reports = selected.map((item) => item.report).filter((report): report is RunReport => Boolean(report));
+    const findingCounts = reports.flatMap((report) => report.findings).reduce<Record<string, number>>((counts, finding) => ({ ...counts, [finding.ruleId]: (counts[finding.ruleId] ?? 0) + 1 }), {});
+    return [configId, {
+      runs: selected.length,
+      successRate: selected.filter((item) => item.status === "success").length / selected.length,
+      failedRate: selected.filter((item) => item.status === "failed" || item.status === "error").length / selected.length,
+      timeoutRate: selected.filter((item) => item.status === "timeout").length / selected.length,
+      unknownRate: reports.length ? reports.filter((report) => report.outcome.status === "unknown").length / reports.length : null,
+      findingRates: Object.fromEntries(Object.entries(findingCounts).map(([ruleId, count]) => [ruleId, count / selected.length])),
+      averageDurationMs: Math.round(selected.reduce((sum, item) => sum + item.durationMs, 0) / selected.length),
+      p95DurationMs: sortedDurations[Math.max(0, Math.ceil(sortedDurations.length * 0.95) - 1)],
+      averageTurns: reports.length ? reports.reduce((sum, report) => sum + report.run.turnCount, 0) / reports.length : null,
+      averageTools: reports.length ? reports.reduce((sum, report) => sum + report.run.toolCount, 0) / reports.length : null,
+    }];
   }));
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), byConfig, results }, null, 2)}\n`, "utf8");

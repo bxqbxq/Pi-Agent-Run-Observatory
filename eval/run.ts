@@ -21,9 +21,11 @@ if (!configPath) {
   if (!Array.isArray(configs) || configs.length === 0 || configs.some((config) => !config.id)) throw new Error("configs 必须是包含 id 的非空数组");
   const tasks = await loadTasks(tasksDir);
   const results: EvalResult[] = [];
-  for (const config of configs) for (const task of tasks) {
-    console.log(`[${config.id}] ${task.id}`);
-    results.push(await runEvalTask(task, config, { rootDir, extensionPath: resolve(rootDir, "extensions/run-review.ts") }));
+  for (const config of configs) {
+    for (const task of tasks) {
+      console.log(`[${config.id}] ${task.id}`);
+      results.push(await runEvalTask(task, config, { rootDir, extensionPath: resolve(rootDir, "extensions/run-review.ts") }));
+    }
   }
   await writeEvalSummary(output, results);
   console.log(`评测完成：${output}`);

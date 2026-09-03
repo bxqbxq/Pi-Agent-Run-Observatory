@@ -5,14 +5,19 @@ export type Confidence = "high" | "medium" | "low";
 export type ReviewEventType =
   | "run_started"
   | "run_ended"
+  | "agent_ended"
   | "turn_started"
   | "turn_ended"
   | "tool_started"
   | "tool_updated"
   | "tool_finished"
+  | "tool_call"
+  | "tool_result"
   | "message"
   | "model_selected"
   | "provider_response"
+  | "provider_request"
+  | "analysis"
   | "verification";
 
 export interface ReviewEvent<T = Record<string, unknown>> {

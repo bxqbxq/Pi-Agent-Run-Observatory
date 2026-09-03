@@ -53,3 +53,11 @@ test("没有验证事件时 outcome 为 unknown", () => {
   assert.equal(report.outcome.status, "unknown");
   assert.equal(report.outcome.verification, "missing");
 });
+
+test("自定义验证命令参与成功判定", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "bash", args: "npm run check:api", isError: false, exitCode: 0 }),
+  ], run, { verificationCommands: ["check:api"] });
+  assert.equal(report.outcome.status, "success");
+  assert.equal(report.outcome.verification, "passed");
+});

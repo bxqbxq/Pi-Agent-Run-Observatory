@@ -22,8 +22,8 @@ export function redactText(value: string, options: RedactionOptions = {}): strin
   if (cwd) {
     output = output.split(cwd).join("<project>");
   }
-  const maxChars = options.maxChars ?? 1000;
-  return output.length > maxChars ? `${output.slice(0, maxChars)}…` : output;
+  const maxChars = options.maxChars;
+  return maxChars !== undefined && output.length > maxChars ? `${output.slice(0, maxChars)}…` : output;
 }
 
 export function redactValue(value: unknown, options: RedactionOptions = {}): unknown {

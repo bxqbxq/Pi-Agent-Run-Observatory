@@ -31,17 +31,17 @@ function normalizedArgs(args: unknown): string {
   if (typeof args === "string") return args.replace(/\s+/g, " ").trim();
   if (Array.isArray(args)) return JSON.stringify(args.map(normalizedArgs));
   if (args && typeof args === "object") {
-    return JSON.stringify(Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b))));
+    return JSON.stringify(Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, normalizedArgs(value)])));
   }
   return String(args);
 }
 
-function isVerification(event: ReviewEvent): boolean {
+function isVerification(event: ReviewEvent, config: AnalyzerConfig): boolean {
   if (event.type === "verification") return true;
   if (event.type !== "tool_finished") return false;
   const payload = payloadOf(event);
   const name = `${payload.toolName ?? ""} ${payload.args ?? ""} ${payload.resultSummary ?? ""}`.toLowerCase();
-  return /\b(test|build|typecheck|lint)\b/.test(name);
+  return config.verificationCommands.some((command) => name.includes(command.toLowerCase()));
 }
 
 function verificationPassed(event: ReviewEvent): boolean {
@@ -60,10 +60,10 @@ export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Parti
   const findings = [
     ...detectToolFailures(events, options),
     ...detectDuplicateCalls(events, options),
-    ...detectUnverifiedChanges(events),
-    ...detectIgnoredVerificationFailures(events),
+    ...detectUnverifiedChanges(events, options),
+    ...detectIgnoredVerificationFailures(events, options),
   ];
-  const verificationEvents = events.filter(isVerification);
+  const verificationEvents = events.filter((event) => isVerification(event, options));
   const hasFailedVerification = verificationEvents.some((event) => !verificationPassed(event));
   const hasPassedVerification = verificationEvents.some(verificationPassed);
   const verification = hasFailedVerification ? "failed" : hasPassedVerification ? "passed" : "missing";
@@ -80,7 +80,7 @@ export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Parti
 function detectToolFailures(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
   const results: Finding[] = [];
   const finished = events.filter((event) => event.type === "tool_finished");
-  for (const [index, event] of finished.entries()) {
+  for (const event of finished) {
     const payload = payloadOf(event);
     if (!payload.isError) continue;
     const sourceIndex = events.indexOf(event);
@@ -114,16 +114,16 @@ function detectDuplicateCalls(events: ReviewEvent[], config: AnalyzerConfig): Fi
   return results;
 }
 
-function detectUnverifiedChanges(events: ReviewEvent[]): Finding[] {
-  const changes = events.filter((event) => event.type === "tool_finished" && /^(write|edit|apply_patch|patch)$/i.test(String(payloadOf(event).toolName ?? "")));
-  if (!changes.length || events.some((event) => isVerification(event) && verificationPassed(event))) return [];
+function detectUnverifiedChanges(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
+  const changes = events.filter((event) => event.type === "tool_finished" && payloadOf(event).isError !== true && /^(write|edit|apply_patch|patch)$/i.test(String(payloadOf(event).toolName ?? "")));
+  if (!changes.length || events.some((event) => isVerification(event, config) && verificationPassed(event))) return [];
   return [finding("change-without-verification", "high", "high", changes, "检测到文件改动，但 run 结束前没有成功验证命令", "运行任务声明的测试、构建、类型检查或 lint 命令")];
 }
 
-function detectIgnoredVerificationFailures(events: ReviewEvent[]): Finding[] {
-  const failures = events.filter((event) => isVerification(event) && !verificationPassed(event));
+function detectIgnoredVerificationFailures(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
+  const failures = events.filter((event) => isVerification(event, config) && !verificationPassed(event));
   if (!failures.length) return [];
-  const laterSuccess = events.some((event, index) => index > events.indexOf(failures[failures.length - 1]) && isVerification(event) && verificationPassed(event));
+  const laterSuccess = events.some((event, index) => index > events.indexOf(failures[failures.length - 1]) && isVerification(event, config) && verificationPassed(event));
   if (laterSuccess) return [];
   const completion = events.filter((event) => event.type === "message").slice(-1);
   return [finding("verification-failure-ignored", "high", "high", [...failures, ...completion], "验证命令失败后没有成功重跑，run 仍然结束", "先修复验证失败，再重新执行验证命令并确认退出码为 0")];
