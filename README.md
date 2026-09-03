@@ -1,4 +1,4 @@
-# pi-run-review
+# Pi-Agent-Run-Observatory
 
 面向 pi 主 Agent 会话的本地运行诊断与评测插件。它把运行事件脱敏后写入 JSONL，通过确定性规则识别工具失败未恢复、无效重复调用、改动未验证和验证失败被忽略，并支持按需生成 LLM 解释。
 
