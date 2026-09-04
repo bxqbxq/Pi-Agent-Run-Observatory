@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-04T14:36:40.571Z",
+  "case": {
+    "id": "add-validation-observed-recovery",
+    "taskId": "add-validation",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "controlledDifference": "Only the candidate adds the checklist system prompt from eval/demo-configs.json.",
+    "baselineEvidence": {
+      "status": "failed",
+      "verification": "failed",
+      "acceptancePassed": true,
+      "failedCommand": "npm test",
+      "failureSummary": "add throws TypeError for non-number arguments: Missing expected exception (TypeError)."
+    },
+    "candidateEvidence": {
+      "status": "success",
+      "verification": "passed",
+      "acceptancePassed": true
+    },
+    "limitation": "This is an observed one-run recovery, not evidence that the prompt is generally better. See add-validation-replication-3x2.json."
+  },
+  "byConfig": {
+    "baseline-deepseek": {
+      "runs": 1,
+      "successRate": 0,
+      "failedRate": 1,
+      "timeoutRate": 0,
+      "unknownRate": 0,
+      "expectedRuns": 0,
+      "expectationPassRate": null,
+      "acceptanceRuns": 1,
+      "acceptancePassRate": 1,
+      "findingRates": {},
+      "averageDurationMs": 6938,
+      "p95DurationMs": 6938,
+      "averageTurns": 4,
+      "averageTools": 6,
+      "usageRuns": 1,
+      "averageInputTokens": 1815,
+      "averageOutputTokens": 579,
+      "averageTotalTokens": 9818,
+      "costRuns": 1,
+      "averageCost": 0.0004370072
+    },
+    "checklist-deepseek": {
+      "runs": 1,
+      "successRate": 1,
+      "failedRate": 0,
+      "timeoutRate": 0,
+      "unknownRate": 0,
+      "expectedRuns": 0,
+      "expectationPassRate": null,
+      "acceptanceRuns": 1,
+      "acceptancePassRate": 1,
+      "findingRates": {},
+      "averageDurationMs": 9497,
+      "p95DurationMs": 9497,
+      "averageTurns": 5,
+      "averageTools": 9,
+      "usageRuns": 1,
+      "averageInputTokens": 2325,
+      "averageOutputTokens": 790,
+      "averageTotalTokens": 10795,
+      "costRuns": 1,
+      "averageCost": 0.000568204
+    }
+  }
+}

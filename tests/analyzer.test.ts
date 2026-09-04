@@ -54,12 +54,45 @@ test("没有验证事件时 outcome 为 unknown", () => {
   assert.equal(report.outcome.verification, "missing");
 });
 
+test("助手消息 usage 和 cost 汇总到 run，用户消息不计入", () => {
+  const report = analyzeRun([
+    event("message", "e1", { role: "user", usage: { input: 100, output: 100, totalTokens: 200, cost: { total: 9 } } }),
+    event("message", "e2", { role: "assistant", usage: { input: 10, output: 4, cacheRead: 3, totalTokens: 17, cost: { total: 0.02 } } }),
+    event("message", "e3", { role: "assistant", usage: { input: 6, output: 2, reasoning: 1, totalTokens: 9, cost: { total: 0.01 } } }),
+  ], run);
+  assert.deepEqual(report.run.usage, {
+    input: 16,
+    output: 6,
+    cacheRead: 3,
+    cacheWrite: 0,
+    reasoning: 1,
+    totalTokens: 26,
+  });
+  assert.equal(report.run.cost, 0.03);
+});
+
+test("旧事件的 totalTokens 被脱敏时从 token 分项恢复", () => {
+  const report = analyzeRun([
+    event("message", "e1", { role: "assistant", usage: { input: 10, output: 4, cacheRead: 3, cacheWrite: 2, totalTokens: "<redacted>" } }),
+  ], run);
+  assert.equal(report.run.usage?.totalTokens, 19);
+});
+
 test("自定义验证命令参与成功判定", () => {
   const report = analyzeRun([
     event("tool_finished", "e1", { toolName: "bash", args: "npm run check:api", isError: false, exitCode: 0 }),
   ], run, { verificationCommands: ["check:api"] });
   assert.equal(report.outcome.status, "success");
   assert.equal(report.outcome.verification, "passed");
+});
+
+test("读取测试文件不被误判为执行验证命令", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "read", args: { path: "math.test.js" }, isError: false, resultSummary: "test('add', () => {})" }),
+    event("message", "e2", { role: "assistant", text: "任务完成" }),
+  ], run);
+  assert.equal(report.outcome.verification, "missing");
+  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
 });
 
 test("工具失败后同一工具成功重试时不判定为未恢复", () => {

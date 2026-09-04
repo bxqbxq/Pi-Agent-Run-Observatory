@@ -49,6 +49,7 @@ function verificationKey(event: ReviewEvent, config: AnalyzerConfig): string | u
     const index = config.verificationCommands.findIndex((candidate) => payload.verificationCommand?.toLowerCase() === candidate.toLowerCase());
     return index >= 0 ? `verification:${index}` : payload.verificationCommand.toLowerCase();
   }
+  if (!/^(?:bash|powershell|shell|exec|command)$/i.test(String(payload.toolName ?? ""))) return undefined;
   const name = `${payload.toolName ?? ""} ${payload.args ?? ""} ${payload.resultSummary ?? ""}`.toLowerCase();
   const index = config.verificationCommands.findIndex((command) => name.includes(command.toLowerCase()));
   return index >= 0 ? `verification:${index}` : undefined;
@@ -75,6 +76,44 @@ function claimsCompletion(event: ReviewEvent): boolean {
   return reportsCompletion && !reportsFailure;
 }
 
+function aggregateRunUsage(events: ReviewEvent[], run: RunSummary): RunSummary {
+  const usageKeys = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const;
+  const usage = Object.fromEntries(usageKeys.map((key) => [key, 0])) as Record<(typeof usageKeys)[number], number>;
+  const observedUsage = new Set<string>();
+  let hasUsage = false;
+  let cost = 0;
+  let hasCost = false;
+  for (const event of events) {
+    if (event.type !== "message" || event.payload.role !== "assistant") continue;
+    const messageUsage = event.payload.usage;
+    if (!messageUsage || typeof messageUsage !== "object" || Array.isArray(messageUsage)) continue;
+    const values = messageUsage as Record<string, unknown>;
+    for (const key of usageKeys) {
+      if (typeof values[key] === "number" && Number.isFinite(values[key])) {
+        usage[key] += values[key];
+        observedUsage.add(key);
+        hasUsage = true;
+      }
+    }
+    const costValue = values.cost;
+    if (costValue && typeof costValue === "object" && !Array.isArray(costValue)) {
+      const total = (costValue as Record<string, unknown>).total;
+      if (typeof total === "number" && Number.isFinite(total)) {
+        cost += total;
+        hasCost = true;
+      }
+    }
+  }
+  if (hasUsage && !observedUsage.has("totalTokens")) {
+    usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  }
+  return {
+    ...run,
+    usage: hasUsage ? usage : run.usage,
+    cost: hasCost ? cost : run.cost,
+  };
+}
+
 export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Partial<AnalyzerConfig> = {}): RunReport {
   const options: AnalyzerConfig = {
     duplicateWindow: config.duplicateWindow ?? DEFAULT_ANALYZER_CONFIG.duplicateWindow,
@@ -99,7 +138,7 @@ export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Parti
   if (findings.some((item) => item.severity === "high") && status === "success") status = "partial";
   return {
     schemaVersion: 1,
-    run,
+    run: aggregateRunUsage(events, run),
     outcome: { status, source: status === "unknown" ? "unknown" : "rule", verification },
     findings,
   };

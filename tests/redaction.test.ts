@@ -15,6 +15,15 @@ test("对象脱敏敏感字段", () => {
   assert.deepEqual(output.nested, { password: "<redacted>", ok: "yes" });
 });
 
+test("token 计数保留数值但真实 token 字符串仍脱敏", () => {
+  assert.deepEqual(redactValue({ totalTokens: 123, inputTokens: 80, accessToken: "private-token-value", token: "private-token-value" }), {
+    totalTokens: 123,
+    inputTokens: 80,
+    accessToken: "<redacted>",
+    token: "<redacted>",
+  });
+});
+
 test("未提供长度限制时保留完整脱敏文本", () => {
   const input = "x".repeat(1200);
   assert.equal(redactText(input).length, 1200);

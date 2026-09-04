@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-04T14:37:00.000Z",
+  "case": {
+    "id": "add-validation-replication-3x2",
+    "taskId": "add-validation",
+    "samplesPerConfig": 3,
+    "conclusion": "The checklist prompt did not improve success or acceptance rate in this replication and increased latency, tool use, token use, and cost."
+  },
+  "byConfig": {
+    "baseline-deepseek": {
+      "runs": 3,
+      "successRate": 1,
+      "failedRate": 0,
+      "timeoutRate": 0,
+      "unknownRate": 0,
+      "expectedRuns": 0,
+      "expectationPassRate": null,
+      "acceptanceRuns": 3,
+      "acceptancePassRate": 1,
+      "findingRates": {},
+      "averageDurationMs": 7005,
+      "p95DurationMs": 7440,
+      "averageTurns": 4,
+      "averageTools": 5.666666666666667,
+      "usageRuns": 3,
+      "averageInputTokens": 2159.3333333333335,
+      "averageOutputTokens": 537.3333333333334,
+      "averageTotalTokens": 10163.333333333334,
+      "costRuns": 3,
+      "averageCost": 0.00047366666666666667
+    },
+    "checklist-deepseek": {
+      "runs": 3,
+      "successRate": 1,
+      "failedRate": 0,
+      "timeoutRate": 0,
+      "unknownRate": 0,
+      "expectedRuns": 0,
+      "expectationPassRate": null,
+      "acceptanceRuns": 3,
+      "acceptancePassRate": 1,
+      "findingRates": {},
+      "averageDurationMs": 9076,
+      "p95DurationMs": 9614,
+      "averageTurns": 5,
+      "averageTools": 8,
+      "usageRuns": 3,
+      "averageInputTokens": 2389.3333333333335,
+      "averageOutputTokens": 869.3333333333334,
+      "averageTotalTokens": 10896,
+      "costRuns": 3,
+      "averageCost": 0.0005993045333333334
+    }
+  }
+}

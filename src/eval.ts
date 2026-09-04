@@ -7,7 +7,7 @@ import { analyzeRun } from "./analyzer.js";
 import type { RunReport } from "./schema.js";
 import type { ReviewEvent } from "./schema.js";
 import { renderHtml, renderMarkdown } from "./render.js";
-import { appendEvent, readEvents, writeReport } from "./storage.js";
+import { appendEvent, readEvents, readReport, writeReport } from "./storage.js";
 
 function childEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -60,6 +60,7 @@ export interface EvalConfig {
 export interface EvalResult {
   taskId: string;
   configId: string;
+  sampleIndex?: number;
   status: EvalStatus;
   durationMs: number;
   piExitCode: number | null;
@@ -70,6 +71,54 @@ export interface EvalResult {
   changedFiles?: string[];
   acceptance?: EvalAcceptanceResult;
   expectationPassed?: boolean;
+}
+
+export function parseRepeatCount(value: string | undefined): number {
+  if (value === undefined) return 1;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new Error("--repeats 必须是 1 到 100 之间的整数");
+  }
+  return parsed;
+}
+
+export function selectEvalTasks(tasks: EvalTask[], taskId: string | undefined): EvalTask[] {
+  if (!taskId) return tasks;
+  const selected = tasks.filter((task) => task.id === taskId);
+  if (selected.length === 0) throw new Error(`任务目录中不存在任务：${taskId}`);
+  return selected;
+}
+
+export interface EvalConfigSummary {
+  runs: number;
+  successRate: number;
+  failedRate: number;
+  timeoutRate: number;
+  unknownRate: number | null;
+  expectedRuns: number;
+  expectationPassRate: number | null;
+  acceptanceRuns: number;
+  acceptancePassRate: number | null;
+  findingRates: Record<string, number>;
+  averageDurationMs: number;
+  p95DurationMs: number;
+  averageTurns: number | null;
+  averageTools: number | null;
+  usageRuns: number | null;
+  averageInputTokens: number | null;
+  averageOutputTokens: number | null;
+  averageTotalTokens: number | null;
+  costRuns: number | null;
+  averageCost: number | null;
+}
+
+function average(values: number[]): number | null {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function usageMetric(report: RunReport, key: "input" | "output" | "totalTokens"): number | undefined {
+  const value = report.run.usage?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export function validateTask(value: unknown): EvalTask {
@@ -269,14 +318,14 @@ async function latestReportPath(workspace: string, storageDir = ".pi/run-review"
 
 async function readLatestReport(workspace: string, storageDir = ".pi/run-review"): Promise<RunReport | undefined> {
   const path = await latestReportPath(workspace, storageDir);
-  return path ? JSON.parse(await readFile(path, "utf8")) as RunReport : undefined;
+  return path ? readReport(path) : undefined;
 }
 
 export async function reconcileEvalReport(workspace: string, validations: EvalResult["validations"], storageDir = ".pi/run-review"): Promise<RunReport | undefined> {
   if (!validations.length) return readLatestReport(workspace, storageDir);
   const reportPath = await latestReportPath(workspace, storageDir);
   if (!reportPath) return undefined;
-  const report = JSON.parse(await readFile(reportPath, "utf8")) as RunReport;
+  const report = await readReport(reportPath);
   const eventsPath = join(dirname(dirname(reportPath)), "events.jsonl");
   const events = await readEvents(eventsPath);
   const verificationEvents: ReviewEvent[] = validations.map((validation, index) => ({
@@ -302,7 +351,7 @@ export async function reconcileEvalReport(workspace: string, validations: EvalRe
   return reconciled;
 }
 
-export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; piCliPath?: string; keepWorkspace?: boolean }): Promise<EvalResult> {
+export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; piCliPath?: string; keepWorkspace?: boolean; sampleIndex?: number }): Promise<EvalResult> {
   const startedAt = Date.now();
   const workspace = await mkdtemp(join(tmpdir(), `pi-run-review-${task.id}-`));
   try {
@@ -359,6 +408,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
     const result: EvalResult = {
       taskId: task.id,
       configId: config.id,
+      sampleIndex: options.sampleIndex,
       status,
       durationMs: Date.now() - startedAt,
       piExitCode: piResult.exitCode,
@@ -388,8 +438,12 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
     const selected = results.filter((item) => item.configId === configId);
     const sortedDurations = selected.map((item) => item.durationMs).sort((a, b) => a - b);
     const reports = selected.map((item) => item.report).filter((report): report is RunReport => Boolean(report));
-    const findingCounts = reports.flatMap((report) => report.findings).reduce<Record<string, number>>((counts, finding) => ({ ...counts, [finding.ruleId]: (counts[finding.ruleId] ?? 0) + 1 }), {});
-    return [configId, {
+    const findingCounts = reports.flatMap((report) => [...new Set(report.findings.map((finding) => finding.ruleId))]).reduce<Record<string, number>>((counts, ruleId) => ({ ...counts, [ruleId]: (counts[ruleId] ?? 0) + 1 }), {});
+    const inputTokens = reports.map((report) => usageMetric(report, "input")).filter((value): value is number => value !== undefined);
+    const outputTokens = reports.map((report) => usageMetric(report, "output")).filter((value): value is number => value !== undefined);
+    const totalTokens = reports.map((report) => usageMetric(report, "totalTokens")).filter((value): value is number => value !== undefined);
+    const costs = reports.map((report) => report.run.cost).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const summary: EvalConfigSummary = {
       runs: selected.length,
       successRate: selected.filter((item) => item.status === "success").length / selected.length,
       failedRate: selected.filter((item) => item.status === "failed" || item.status === "error").length / selected.length,
@@ -408,7 +462,14 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
       p95DurationMs: sortedDurations[Math.max(0, Math.ceil(sortedDurations.length * 0.95) - 1)],
       averageTurns: reports.length ? reports.reduce((sum, report) => sum + report.run.turnCount, 0) / reports.length : null,
       averageTools: reports.length ? reports.reduce((sum, report) => sum + report.run.toolCount, 0) / reports.length : null,
-    }];
+      usageRuns: totalTokens.length,
+      averageInputTokens: average(inputTokens),
+      averageOutputTokens: average(outputTokens),
+      averageTotalTokens: average(totalTokens),
+      costRuns: costs.length,
+      averageCost: average(costs),
+    };
+    return [configId, summary];
   }));
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), byConfig, results }, null, 2)}\n`, "utf8");

@@ -32,15 +32,23 @@ pi -e ./extensions/run-review.ts
 /run-review
 /run-review --explain
 /run-review --run <runId> --format json
+/run-diff <baselineRunId> <candidateRunId>
+/run-diff <baselineConfigId> <candidateConfigId> --file eval/results/8x2.json
 ```
 
 `--explain` 使用当前模型对规则证据做按需解释；解释不会覆盖规则结论，也不会计入主 Agent 的统计。
+
+`/run-diff` 传入两个 `runId` 时比较单次运行；传入两个配置 ID 时比较评测集合中的成功率、失败率、unknown、隐藏验收、finding、平均/P95 耗时、turn、工具、token 和成本。配置比较可用 `--file` 指定评测汇总；省略时会从 `eval/results/` 中选择最新且同时包含两个配置的有效汇总。旧报告没有采集到 token 或成本时，相应值显示为 `null`，不会按 0 处理。
 
 ## 隐私模式
 
 默认 `captureFullContent` 为 `false`。事件日志不会保存用户 Prompt、助手回复、工具参数或 provider payload 原文：消息只记录长度和完成/失败信号，参数只记录字段结构和经过脱敏后计算的 SHA-256 指纹。指纹用于判断重复调用，只表示两个参数是否相同，不是对原文的加密存储。工具结果和错误仍会经过凭据、项目路径、外部绝对路径替换及长度截断后保存。
 
 只有在 `.pi/run-review/config.json` 中显式设置 `"captureFullContent": true` 时，才会保存经过凭据和路径脱敏的完整内容。JSON、Markdown 和 HTML 报告都会以 `captureMode: full` 或“采集模式：full”标记该模式。修改配置不会清理此前生成的事件和报告，需要由用户按本地数据保留策略自行处理旧文件。
+
+事件和报告在读写边界执行运行时 schema 校验。JSONL 中单个损坏或版本不兼容的事件会被跳过并输出警告，其余有效事件继续参与分析；配置损坏或字段类型错误时整份配置会被忽略并回退安全默认值。日志或报告写入失败只产生警告，不应中断主 Agent 任务。
+
+同一 run 的事件通过串行队列追加写入，并以 `toolCallId` 关联交错完成的工具调用。`agent_end` 只记录底层结束事件，最终报告在 `agent_settled` 后异步生成。单次运行默认最多采集 10000 条普通事件，可通过 `maxEventsPerRun` 调整；达到上限后保留最终 `run_ended`，并且每个 run 只警告一次。
 
 ## 评测
 
@@ -65,6 +73,12 @@ npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --output 
 npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/results/8x2.json
 ```
 
+用 `--task` 只运行一个任务，用 `--repeats` 对每个“配置 x 任务”组合重复采样。每条结果会记录从 1 开始的 `sampleIndex`，配置汇总中的 `runs` 是全部重复样本数：
+
+```powershell
+npm run eval -- --configs eval/demo-configs.json --tasks eval/tasks --task add-validation --repeats 3 --output eval/results/demo-add-validation-3x2.json
+```
+
 结果中的 `changedFiles` 记录 Agent 在隐藏夹具注入前产生的真实改动；`acceptance` 给出单次任务级验收及失败原因。汇总中的 `acceptancePassRate` 是配置在带验收任务上的语义通过率，较旧版仅依赖“任意改动 + 基线测试通过”的 `successRate` 更严格。
 
 负向任务的 `status` 预期为 `failed` 并不代表评测器失效。`expectationPassRate` 同时受模型是否按提示触发场景、插件是否采集到事件和规则是否正确识别影响，不能单独当作诊断准确率。规则正确性应以确定性的单元和集成测试为主，真实模型探针只作为端到端补充；正常任务成功率和负向探针预期匹配率也不能合并成一个分数。
@@ -77,9 +91,10 @@ npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/res
 
 ## 演示路径
 
-1. 让 Agent 修改 fixture 后故意跳过测试，运行 `/run-review` 查看 `change-without-verification` 及证据。
-2. 在 `.pi/run-review/config.json` 中补充项目验证命令，重新运行同一任务和测试。
-3. 用两个模型/提示词配置执行 `npm run eval -- --configs eval/configs.json`，比较成功率、unknown 比例、finding 分布和 P95 耗时。
+1. 用 `/run-diff baseline-deepseek checklist-deepseek --file eval/cases/add-validation-observed-recovery.json` 查看一次真实的“失败、定位、加入检查清单提示词、重跑成功”记录。失败证据是公开测试报出预期 `TypeError` 未抛出，runner 隐藏验收本身通过，因此不是基础设施故障。
+2. 再读取 `eval/cases/add-validation-replication-3x2.json`。随后三次重复实验中两种配置均为 3/3 成功，检查清单增加了耗时、工具、token 和成本；这个反证意味着单次恢复不能证明提示词普遍更优。
+3. 运行上面的 `--task add-validation --repeats 3` 命令生成新样本。两种配置固定相同模型、thinking、工具和任务，只改变 system prompt；只有重复样本持续显示改善时，才应采用候选配置。
+4. 用两个模型配置执行完整基准，比较成功率、unknown 比例、隐藏验收、finding 分布和 P95 耗时。
 
 ## 已知限制
 

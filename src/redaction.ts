@@ -83,7 +83,8 @@ export function redactValue(value: unknown, options: RedactionOptions = {}): unk
   if (value && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      if (/token|secret|password|api.?key|private.?key/i.test(key)) {
+      const numericTokenMetric = typeof item === "number" && /token/i.test(key);
+      if (!numericTokenMetric && /token|secret|password|api.?key|private.?key/i.test(key)) {
         result[key] = "<redacted>";
       } else {
         result[key] = redactValue(item, options);

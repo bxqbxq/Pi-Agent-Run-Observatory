@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join, normalize } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { evaluateAcceptance, evaluateExpectation, loadTasks, piCliPath, reconcileEvalReport, runEvalTask, validateTask, writeEvalSummary } from "../src/eval.js";
+import { evaluateAcceptance, evaluateExpectation, loadTasks, parseRepeatCount, piCliPath, reconcileEvalReport, runEvalTask, selectEvalTasks, validateTask, writeEvalSummary } from "../src/eval.js";
 import { appendEvent, writeReport } from "../src/storage.js";
 import { renderHtml, renderMarkdown } from "../src/render.js";
 import type { RunReport } from "../src/schema.js";
@@ -40,6 +40,19 @@ test("任务 schema 要求验证命令", () => {
     acceptance: { fixture: "eval/acceptance", commands: ["node .eval/acceptance/check.mjs"], requiredChanges: ["math.js"], forbiddenChanges: ["package.json"] },
   }).acceptance?.requiredChanges, ["math.js"]);
   assert.throws(() => validateTask({ id: "bad-acceptance", prompt: "x", fixture: "y", validate: ["npm test"], acceptance: { requiredChanges: [] } }), /acceptance/);
+});
+
+test("重复次数和单任务筛选拒绝无效输入", () => {
+  assert.equal(parseRepeatCount(undefined), 1);
+  assert.equal(parseRepeatCount("3"), 3);
+  assert.throws(() => parseRepeatCount("0"), /1 到 100/);
+  assert.throws(() => parseRepeatCount("1.5"), /1 到 100/);
+  const tasks = [
+    { id: "a", prompt: "a", fixture: "fixture", validate: ["npm test"] },
+    { id: "b", prompt: "b", fixture: "fixture", validate: ["npm test"] },
+  ];
+  assert.deepEqual(selectEvalTasks(tasks, "b").map((task) => task.id), ["b"]);
+  assert.throws(() => selectEvalTasks(tasks, "missing"), /不存在任务/);
 });
 
 test("任务级验收检查必改和禁改文件", () => {
@@ -85,8 +98,14 @@ test("评测汇总按配置计算成功率", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-run-review-test-"));
   const path = join(dir, "summary.json");
   await writeEvalSummary(path, [
-    { taskId: "a", configId: "baseline", status: "success", durationMs: 100, piExitCode: 0, validations: [], expectationPassed: true, acceptance: { passed: true, failures: [] } },
-    { taskId: "b", configId: "baseline", status: "failed", durationMs: 300, piExitCode: 0, validations: [], acceptance: { passed: false, failures: ["x"] } },
+    {
+      taskId: "a", configId: "baseline", status: "success", durationMs: 100, piExitCode: 0, validations: [], expectationPassed: true, acceptance: { passed: true, failures: [] },
+      report: { schemaVersion: 1, run: { runId: "run_a", startedAt: "2026-09-03T00:00:00.000Z", turnCount: 2, toolCount: 3, usage: { input: 10, output: 5, totalTokens: 15 }, cost: 0.01 }, outcome: { status: "success", source: "rule", verification: "passed" }, findings: [] },
+    },
+    {
+      taskId: "b", configId: "baseline", status: "failed", durationMs: 300, piExitCode: 0, validations: [], acceptance: { passed: false, failures: ["x"] },
+      report: { schemaVersion: 1, run: { runId: "run_b", startedAt: "2026-09-03T00:00:00.000Z", turnCount: 4, toolCount: 5, usage: { input: 30, output: 15, totalTokens: 45 }, cost: 0.03 }, outcome: { status: "failed", source: "rule", verification: "failed" }, findings: [] },
+    },
   ]);
   const summary = JSON.parse(await readFile(path, "utf8"));
   assert.equal(summary.byConfig.baseline.successRate, 0.5);
@@ -95,6 +114,12 @@ test("评测汇总按配置计算成功率", async () => {
   assert.equal(summary.byConfig.baseline.acceptanceRuns, 2);
   assert.equal(summary.byConfig.baseline.acceptancePassRate, 0.5);
   assert.equal(summary.byConfig.baseline.averageDurationMs, 200);
+  assert.equal(summary.byConfig.baseline.usageRuns, 2);
+  assert.equal(summary.byConfig.baseline.averageInputTokens, 20);
+  assert.equal(summary.byConfig.baseline.averageOutputTokens, 10);
+  assert.equal(summary.byConfig.baseline.averageTotalTokens, 30);
+  assert.equal(summary.byConfig.baseline.costRuns, 2);
+  assert.equal(summary.byConfig.baseline.averageCost, 0.02);
 });
 
 test("失败任务按状态、finding、验证和改动状态匹配预期", () => {
@@ -280,10 +305,12 @@ test("评测 runner 端到端执行假 Pi、验证并协调报告", async () => 
       extensionPath: "unused-extension.ts",
       piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi.mjs"),
       keepWorkspace: false,
+      sampleIndex: 2,
     },
   );
 
   assert.equal(result.status, "success");
+  assert.equal(result.sampleIndex, 2);
   assert.equal(result.validations.length, 1);
   assert.equal(result.validations[0]?.passed, true);
   assert.equal(result.report?.outcome.status, "success");
