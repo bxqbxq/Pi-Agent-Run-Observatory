@@ -36,7 +36,7 @@ Agent 的最终报错通常不能直接说明根因。常见情况包括：
 4. 每条诊断输出证据链、严重级别、置信度和建议动作。
 5. 支持 `/run-review` 查看当前或最近一次运行的 Markdown 报告。
 6. 支持 `/run-review --explain`，按需调用 LLM 生成人类可读解释。
-7. 使用独立临时工作区和固定 Git 基线运行 8～12 个基准任务，比较模型和系统提示词配置。
+7. 使用独立临时工作区和固定 Git 基线运行 8～12 个基准任务，比较模型和系统提示词配置；正常任务支持隐藏验收，避免仅凭任意改动和基线测试通过判定完成。
 8. 输出稳定的版本化 JSON 报告，并渲染为 Markdown 和静态 HTML。
 
 ### 3.2 非目标
@@ -311,6 +311,12 @@ Agent 的最终报错通常不能直接说明根因。常见情况包括：
   "prompt": "给用户列表接口增加分页",
   "fixture": "fixtures/users-api",
   "validate": ["npm test", "npm run typecheck"],
+  "acceptance": {
+    "fixture": "eval/acceptance",
+    "commands": ["node .eval/acceptance/check.mjs"],
+    "requiredChanges": ["src/users.ts"],
+    "forbiddenChanges": ["package-lock.json"]
+  },
   "tags": ["backend", "coding"],
   "timeoutMs": 300000
 }
@@ -324,8 +330,10 @@ Agent 的最终报错通常不能直接说明根因。常见情况包括：
 2. 串行执行每个任务与配置组合。
 3. 固定可配置的模型、系统提示词、工具集和运行参数。
 4. 任务完成后运行声明的验证命令。
-5. 收集 run-review JSON 报告和验证结果。
-6. 清理临时工作区，保留报告和必要的脱敏产物。
+5. Agent 结束后再注入隐藏验收夹具并运行 acceptance commands；夹具不得提前暴露给 Agent。
+6. 用 Git baseline 之后的真实改动文件检查 required/forbidden changes。
+7. 收集 run-review JSON 报告和验证结果。
+8. 清理临时工作区，保留报告和必要的脱敏产物。
 
 ### 比较指标
 
@@ -337,6 +345,7 @@ Agent 的最终报错通常不能直接说明根因。常见情况包括：
 - 平均 turn/tool 数量；
 - input/output/total token；
 - 成本（provider 有提供时）。
+- `acceptancePassRate`：带任务级验收的运行中，隐藏验收和改动文件契约同时通过的比例；不能与 `successRate` 混为同一指标。
 
 首版基准集包含 8～12 个手工任务，并补充从真实失败运行中脱敏、人工标注的案例。
 
@@ -478,4 +487,3 @@ spec.md
 - 如何设计固定基线和独立工作区，保证模型比较可复现；
 - 如何使用 `unknown` 和证据链避免虚假的成功率；
 - 插件自身的性能开销、异常隔离和 API 兼容策略。
-

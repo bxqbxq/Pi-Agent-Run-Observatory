@@ -1,1 +1,1 @@
-{"id":"clamp-decimals","prompt":"为 clamp 增加小数边界测试，保持现有行为不变。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["testing"]}
+{"id":"clamp-decimals","prompt":"在 `math.test.js` 中为 clamp 增加包含小数字面量的边界测试，覆盖区间内、低于下限和高于上限，保持实现行为不变。","fixture":"fixtures/tiny-node","validate":["npm test"],"acceptance":{"fixture":"eval/acceptance","commands":["node .eval/acceptance/clamp-decimals.mjs"],"requiredChanges":["math.test.js"]},"tags":["testing"]}

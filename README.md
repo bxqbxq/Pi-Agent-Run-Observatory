@@ -45,7 +45,7 @@ Copy-Item eval/configs.example.json eval/configs.json
 npm run eval -- --configs eval/configs.json
 ```
 
-评测任务位于 `eval/tasks/`，每个任务从 `fixtures/` 的同一基线复制到独立临时工作区，并串行执行声明的验证命令。
+评测任务位于 `eval/tasks/`，每个任务从 `fixtures/` 的同一基线复制到独立临时工作区，并串行执行声明的验证命令。正常任务可通过 `acceptance` 声明必改文件、禁改文件和隐藏验收夹具；隐藏文件只在 Agent 结束后复制到 `.eval/acceptance/`，不会提前暴露给模型。
 
 合成负向行为探针单独位于 `eval/failure-tasks/`，不会混入正常任务的成功率。运行该目录时，汇总中的 `expectationPassRate` 表示端到端结果是否符合任务声明的失败状态、finding、验证结果和改动状态：
 
@@ -58,6 +58,8 @@ npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --output 
 ```powershell
 npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/results/8x2.json
 ```
+
+结果中的 `changedFiles` 记录 Agent 在隐藏夹具注入前产生的真实改动；`acceptance` 给出单次任务级验收及失败原因。汇总中的 `acceptancePassRate` 是配置在带验收任务上的语义通过率，较旧版仅依赖“任意改动 + 基线测试通过”的 `successRate` 更严格。
 
 负向任务的 `status` 预期为 `failed` 并不代表评测器失效。`expectationPassRate` 同时受模型是否按提示触发场景、插件是否采集到事件和规则是否正确识别影响，不能单独当作诊断准确率。规则正确性应以确定性的单元和集成测试为主，真实模型探针只作为端到端补充；正常任务成功率和负向探针预期匹配率也不能合并成一个分数。
 

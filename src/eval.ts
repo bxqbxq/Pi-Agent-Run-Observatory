@@ -25,6 +25,7 @@ export interface EvalTask {
   expected?: EvalExpected;
   agentTools?: string[];
   agentRunsValidation?: boolean;
+  acceptance?: EvalAcceptanceConfig;
 }
 
 export type EvalStatus = "success" | "failed" | "timeout" | "error";
@@ -34,6 +35,18 @@ export interface EvalExpected {
   findings?: string[];
   verification?: "passed" | "failed" | "missing" | "unknown";
   changed?: boolean;
+}
+
+export interface EvalAcceptanceConfig {
+  fixture?: string;
+  commands?: string[];
+  requiredChanges?: string[];
+  forbiddenChanges?: string[];
+}
+
+export interface EvalAcceptanceResult {
+  passed: boolean;
+  failures: string[];
 }
 
 export interface EvalConfig {
@@ -54,6 +67,8 @@ export interface EvalResult {
   report?: RunReport;
   error?: string;
   changed?: boolean;
+  changedFiles?: string[];
+  acceptance?: EvalAcceptanceResult;
   expectationPassed?: boolean;
 }
 
@@ -86,7 +101,54 @@ export function validateTask(value: unknown): EvalTask {
   if (task.agentRunsValidation !== undefined && typeof task.agentRunsValidation !== "boolean") {
     throw new Error(`任务 ${task.id} 的 agentRunsValidation 必须是布尔值`);
   }
+  if (task.acceptance !== undefined) {
+    if (!task.acceptance || typeof task.acceptance !== "object") throw new Error(`任务 ${task.id} 的 acceptance 必须是对象`);
+    const acceptance = task.acceptance as Partial<EvalAcceptanceConfig>;
+    if (acceptance.fixture !== undefined && (typeof acceptance.fixture !== "string" || !acceptance.fixture.trim())) {
+      throw new Error(`任务 ${task.id} 的 acceptance.fixture 必须是非空字符串`);
+    }
+    for (const field of ["commands", "requiredChanges", "forbiddenChanges"] as const) {
+      const paths = acceptance[field];
+      if (paths !== undefined && (!Array.isArray(paths) || paths.length === 0 || paths.some((item) => typeof item !== "string" || !item.trim()))) {
+        throw new Error(`任务 ${task.id} 的 acceptance.${field} 必须是非空字符串数组`);
+      }
+    }
+    if (!acceptance.fixture && !acceptance.commands && !acceptance.requiredChanges && !acceptance.forbiddenChanges) {
+      throw new Error(`任务 ${task.id} 的 acceptance 至少需要一项检查`);
+    }
+  }
   return task as EvalTask;
+}
+
+function normalizedWorkspacePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+export function evaluateAcceptance(config: EvalAcceptanceConfig | undefined, changedFiles: string[], validations: EvalResult["validations"] = []): EvalAcceptanceResult | undefined {
+  if (!config) return undefined;
+  const changed = new Set(changedFiles.map(normalizedWorkspacePath));
+  const failures: string[] = [];
+  for (const path of config.requiredChanges ?? []) {
+    if (!changed.has(normalizedWorkspacePath(path))) failures.push(`缺少必需改动: ${path}`);
+  }
+  for (const path of config.forbiddenChanges ?? []) {
+    if (changed.has(normalizedWorkspacePath(path))) failures.push(`出现禁止改动: ${path}`);
+  }
+  for (const command of config.commands ?? []) {
+    const validation = validations.find((item) => item.command === command);
+    if (!validation) failures.push(`隐藏验收未执行: ${command}`);
+    else if (!validation.passed) failures.push(`隐藏验收失败: ${command}`);
+  }
+  return { passed: failures.length === 0, failures };
+}
+
+function changedFilesFromStatus(output: string): string[] {
+  return output.split(/\r?\n/)
+    .filter((line) => line.trim() && !/^\?\? \.pi[\\/]/.test(line))
+    .map((line) => line.slice(3).trim().split(" -> ").at(-1) ?? "")
+    .filter(Boolean)
+    .map(normalizedWorkspacePath)
+    .sort();
 }
 
 export function evaluateExpectation(expected: EvalExpected | undefined, result: Pick<EvalResult, "status" | "report" | "changed">): boolean | undefined {
@@ -268,20 +330,30 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       : "评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。";
     args.push(`${task.prompt}\n\n${validationInstruction}`);
     const piResult = await runPiProcess(process.execPath, [options.piCliPath ?? piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
+    const diff = await runProcess("git", ["status", "--porcelain"], workspace, 30_000);
+    const changedFiles = changedFilesFromStatus(diff.output);
+    const changed = changedFiles.length > 0;
+    if (task.acceptance?.fixture) {
+      const acceptanceSource = resolve(options.rootDir, task.acceptance.fixture);
+      const acceptanceTarget = join(workspace, ".eval", "acceptance");
+      await mkdir(acceptanceTarget, { recursive: true });
+      for (const entry of await readdir(acceptanceSource)) {
+        await cp(join(acceptanceSource, entry), join(acceptanceTarget, entry), { recursive: true });
+      }
+    }
     const validations: EvalResult["validations"] = [];
     if (!piResult.timedOut) {
-      for (const command of task.validate) {
+      for (const command of [...task.validate, ...(task.acceptance?.commands ?? [])]) {
         const validation = await runProcess(command, [], workspace, task.timeoutMs ?? 300_000, true);
         validations.push({ command, exitCode: validation.exitCode, passed: validation.exitCode === 0, output: validation.output });
       }
     }
-    const diff = await runProcess("git", ["status", "--porcelain"], workspace, 30_000);
-    const changed = diff.output.split(/\r?\n/).some((line) => line.trim() && !/^\?\? \.pi[\\/]/.test(line));
+    const acceptance = evaluateAcceptance(task.acceptance, changedFiles, validations);
     const status = piResult.timedOut
       ? "timeout"
       : piResult.exitCode !== 0
         ? "error"
-        : validations.every((item) => item.passed) && changed
+        : validations.every((item) => item.passed) && changed && acceptance?.passed !== false
           ? "success"
           : "failed";
     const result: EvalResult = {
@@ -293,7 +365,15 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       validations,
       report: await reconcileEvalReport(workspace, validations),
       changed,
-      error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : !changed ? "Agent 未产生工作区改动" : undefined,
+      changedFiles,
+      acceptance,
+      error: status === "error" || status === "timeout"
+        ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined))
+        : !changed
+          ? "Agent 未产生工作区改动"
+          : acceptance?.passed === false
+            ? acceptance.failures.join("; ")
+            : undefined,
     };
     result.expectationPassed = evaluateExpectation(task.expected, result);
     return result;
@@ -318,6 +398,10 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
       expectedRuns: selected.filter((item) => item.expectationPassed !== undefined).length,
       expectationPassRate: selected.some((item) => item.expectationPassed !== undefined)
         ? selected.filter((item) => item.expectationPassed === true).length / selected.filter((item) => item.expectationPassed !== undefined).length
+        : null,
+      acceptanceRuns: selected.filter((item) => item.acceptance !== undefined).length,
+      acceptancePassRate: selected.some((item) => item.acceptance !== undefined)
+        ? selected.filter((item) => item.acceptance?.passed === true).length / selected.filter((item) => item.acceptance !== undefined).length
         : null,
       findingRates: Object.fromEntries(Object.entries(findingCounts).map(([ruleId, count]) => [ruleId, count / selected.length])),
       averageDurationMs: Math.round(selected.reduce((sum, item) => sum + item.durationMs, 0) / selected.length),

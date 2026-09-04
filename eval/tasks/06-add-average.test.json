@@ -1,1 +1,1 @@
-{"id":"add-average","prompt":"新增 average 函数并为其编写测试，避免改变已有导出。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["feature"]}
+{"id":"add-average","prompt":"新增并导出 `average(numbers)`：接收非空数字数组并返回算术平均值；空数组、非数组或含非数字元素时抛出 TypeError。为其编写测试，避免改变已有导出。","fixture":"fixtures/tiny-node","validate":["npm test"],"acceptance":{"fixture":"eval/acceptance","commands":["node .eval/acceptance/add-average.mjs"],"requiredChanges":["math.js","math.test.js"]},"tags":["feature"]}

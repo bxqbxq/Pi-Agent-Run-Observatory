@@ -1,1 +1,1 @@
-{"id":"refactor-clamp","prompt":"重构 clamp 的实现以提高可读性，并保持全部测试通过。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["refactor"]}
+{"id":"refactor-clamp","prompt":"将 clamp 重构为显式早返回：低于 min 返回 min，高于 max 返回 max，否则返回 value；不再使用嵌套 Math.min/Math.max，并保持全部测试通过。","fixture":"fixtures/tiny-node","validate":["npm test"],"acceptance":{"fixture":"eval/acceptance","commands":["node .eval/acceptance/refactor-clamp.mjs"],"requiredChanges":["math.js"]},"tags":["refactor"]}

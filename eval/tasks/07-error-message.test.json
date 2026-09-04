@@ -1,1 +1,1 @@
-{"id":"error-message","prompt":"为 add 的非法输入设计稳定的错误类型或错误消息，并添加测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["errors"]}
+{"id":"error-message","prompt":"当 add 收到非有限数字（包括非 number、NaN、Infinity）时抛出 TypeError，错误消息固定为 `add expects finite numbers`，并添加测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"acceptance":{"fixture":"eval/acceptance","commands":["node .eval/acceptance/error-message.mjs"],"requiredChanges":["math.js","math.test.js"]},"tags":["errors"]}

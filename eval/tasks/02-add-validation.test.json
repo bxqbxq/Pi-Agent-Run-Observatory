@@ -1,1 +1,1 @@
-{"id":"add-validation","prompt":"为 add 函数增加参数校验，拒绝非数字输入，并更新测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["backend"]}
+{"id":"add-validation","prompt":"为 add 函数增加参数校验：任一参数不是 number 时抛出 TypeError，并在 `math.test.js` 中更新测试。","fixture":"fixtures/tiny-node","validate":["npm test"],"acceptance":{"fixture":"eval/acceptance","commands":["node .eval/acceptance/add-validation.mjs"],"requiredChanges":["math.js","math.test.js"]},"tags":["backend"]}

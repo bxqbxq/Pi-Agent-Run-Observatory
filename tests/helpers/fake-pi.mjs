@@ -1,10 +1,19 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const cwd = process.cwd();
 const storageDir = join(cwd, ".pi", "run-review");
 const reportsDir = join(storageDir, "reports");
 const runId = "run_fake_integration";
+
+if (process.argv.some((arg) => arg.includes("CHECK_HIDDEN_ACCEPTANCE"))) {
+  try {
+    await access(join(cwd, ".eval", "acceptance"));
+    throw new Error("hidden acceptance fixture was visible to the Agent");
+  } catch (error) {
+    if ((error).code !== "ENOENT") throw error;
+  }
+}
 
 await mkdir(reportsDir, { recursive: true });
 await writeFile(join(cwd, "agent-change.txt"), "created by fake pi\n", "utf8");
