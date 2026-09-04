@@ -79,3 +79,30 @@ test("验证失败后成功重跑时不判定为被忽略", () => {
   assert.equal(report.outcome.verification, "failed");
   assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
 });
+
+test("Agent 完成后才发生的外部验证失败不算被忽略", () => {
+  const report = analyzeRun([
+    event("message", "e1", { role: "assistant", text: "任务完成" }),
+    event("verification", "e2", { command: "npm test", passed: false, exitCode: 1, source: "declared" }),
+  ], run);
+  assert.equal(report.outcome.status, "failed");
+  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
+});
+
+test("Agent 内部验证失败后结束仍会在后续外部失败存在时被识别", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "bash", args: "npm test", isError: true, exitCode: 1 }),
+    event("message", "e2", { role: "assistant", text: "任务完成" }),
+    event("verification", "e3", { command: "npm test", passed: false, exitCode: 1, source: "declared" }),
+  ], run);
+  const finding = report.findings.find((item) => item.ruleId === "verification-failure-ignored");
+  assert.deepEqual(finding?.evidence, ["e1", "e2"]);
+});
+
+test("Agent 明确报告验证失败时不算忽略失败", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "bash", args: "npm test", isError: true, exitCode: 1 }),
+    event("message", "e2", { role: "assistant", summary: "测试失败，任务尚未完成，需要先修复断言。" }),
+  ], run);
+  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
+});

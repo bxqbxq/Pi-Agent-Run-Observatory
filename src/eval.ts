@@ -22,6 +22,18 @@ export interface EvalTask {
   validate: string[];
   tags?: string[];
   timeoutMs?: number;
+  expected?: EvalExpected;
+  agentTools?: string[];
+  agentRunsValidation?: boolean;
+}
+
+export type EvalStatus = "success" | "failed" | "timeout" | "error";
+
+export interface EvalExpected {
+  status?: EvalStatus;
+  findings?: string[];
+  verification?: "passed" | "failed" | "missing" | "unknown";
+  changed?: boolean;
 }
 
 export interface EvalConfig {
@@ -35,12 +47,14 @@ export interface EvalConfig {
 export interface EvalResult {
   taskId: string;
   configId: string;
-  status: "success" | "failed" | "timeout" | "error";
+  status: EvalStatus;
   durationMs: number;
   piExitCode: number | null;
   validations: Array<{ command: string; exitCode: number | null; passed: boolean; output: string }>;
   report?: RunReport;
   error?: string;
+  changed?: boolean;
+  expectationPassed?: boolean;
 }
 
 export function validateTask(value: unknown): EvalTask {
@@ -50,7 +64,38 @@ export function validateTask(value: unknown): EvalTask {
   if (!Array.isArray(task.validate) || task.validate.length === 0 || task.validate.some((item) => typeof item !== "string")) {
     throw new Error(`任务 ${task.id} 必须包含至少一个验证命令`);
   }
+  if (task.expected !== undefined) {
+    if (!task.expected || typeof task.expected !== "object") throw new Error(`任务 ${task.id} 的 expected 必须是对象`);
+    const expected = task.expected as Partial<EvalExpected>;
+    if (expected.status !== undefined && !["success", "failed", "timeout", "error"].includes(expected.status)) {
+      throw new Error(`任务 ${task.id} 的 expected.status 无效`);
+    }
+    if (expected.findings !== undefined && (!Array.isArray(expected.findings) || expected.findings.some((item) => typeof item !== "string"))) {
+      throw new Error(`任务 ${task.id} 的 expected.findings 必须是字符串数组`);
+    }
+    if (expected.verification !== undefined && !["passed", "failed", "missing", "unknown"].includes(expected.verification)) {
+      throw new Error(`任务 ${task.id} 的 expected.verification 无效`);
+    }
+    if (expected.changed !== undefined && typeof expected.changed !== "boolean") {
+      throw new Error(`任务 ${task.id} 的 expected.changed 必须是布尔值`);
+    }
+  }
+  if (task.agentTools !== undefined && (!Array.isArray(task.agentTools) || task.agentTools.length === 0 || task.agentTools.some((item) => typeof item !== "string" || !item.trim()))) {
+    throw new Error(`任务 ${task.id} 的 agentTools 必须是非空字符串数组`);
+  }
+  if (task.agentRunsValidation !== undefined && typeof task.agentRunsValidation !== "boolean") {
+    throw new Error(`任务 ${task.id} 的 agentRunsValidation 必须是布尔值`);
+  }
   return task as EvalTask;
+}
+
+export function evaluateExpectation(expected: EvalExpected | undefined, result: Pick<EvalResult, "status" | "report" | "changed">): boolean | undefined {
+  if (!expected) return undefined;
+  if (expected.status !== undefined && expected.status !== result.status) return false;
+  if (expected.changed !== undefined && expected.changed !== result.changed) return false;
+  if (expected.verification !== undefined && expected.verification !== result.report?.outcome.verification) return false;
+  if (expected.findings?.some((ruleId) => !result.report?.findings.some((finding) => finding.ruleId === ruleId))) return false;
+  return true;
 }
 
 export async function loadTasks(tasksDir: string): Promise<EvalTask[]> {
@@ -209,15 +254,19 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
     await runProcess("git", ["config", "user.name", "pi-run-review"], workspace, 30_000);
     await runProcess("git", ["add", "."], workspace, 30_000);
     await runProcess("git", ["commit", "-m", "fixture baseline"], workspace, 30_000);
+    const agentTools = task.agentTools ?? ["read", "edit", "write", "grep", "find", "ls"];
     const args = [
       "-p", "--approve", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
-      "--no-context-files", "--tools", "read,edit,write,grep,find,ls", "--mode", "json", "-e", resolve(options.extensionPath),
+      "--no-context-files", "--tools", agentTools.join(","), "--mode", "json", "-e", resolve(options.extensionPath),
     ];
     if (config.provider) args.push("--provider", config.provider);
     if (config.model) args.push("--model", config.model);
     if (config.thinking) args.push("--thinking", config.thinking);
     if (config.systemPrompt) args.push("--system-prompt", config.systemPrompt);
-    args.push(`${task.prompt}\n\n评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。`);
+    const validationInstruction = task.agentRunsValidation
+      ? "请按任务要求自行运行验证命令；评测器会在 Agent 结束后再次复核。"
+      : "评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。";
+    args.push(`${task.prompt}\n\n${validationInstruction}`);
     const piResult = await runPiProcess(process.execPath, [options.piCliPath ?? piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
     const validations: EvalResult["validations"] = [];
     if (!piResult.timedOut) {
@@ -235,7 +284,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
         : validations.every((item) => item.passed) && changed
           ? "success"
           : "failed";
-    return {
+    const result: EvalResult = {
       taskId: task.id,
       configId: config.id,
       status,
@@ -243,8 +292,11 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       piExitCode: piResult.exitCode,
       validations,
       report: await reconcileEvalReport(workspace, validations),
+      changed,
       error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : !changed ? "Agent 未产生工作区改动" : undefined,
     };
+    result.expectationPassed = evaluateExpectation(task.expected, result);
+    return result;
   } finally {
     if (!options.keepWorkspace) await rm(workspace, { recursive: true, force: true });
   }
@@ -263,6 +315,10 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
       failedRate: selected.filter((item) => item.status === "failed" || item.status === "error").length / selected.length,
       timeoutRate: selected.filter((item) => item.status === "timeout").length / selected.length,
       unknownRate: reports.length ? reports.filter((report) => report.outcome.status === "unknown").length / reports.length : null,
+      expectedRuns: selected.filter((item) => item.expectationPassed !== undefined).length,
+      expectationPassRate: selected.some((item) => item.expectationPassed !== undefined)
+        ? selected.filter((item) => item.expectationPassed === true).length / selected.filter((item) => item.expectationPassed !== undefined).length
+        : null,
       findingRates: Object.fromEntries(Object.entries(findingCounts).map(([ruleId, count]) => [ruleId, count / selected.length])),
       averageDurationMs: Math.round(selected.reduce((sum, item) => sum + item.durationMs, 0) / selected.length),
       p95DurationMs: sortedDurations[Math.max(0, Math.ceil(sortedDurations.length * 0.95) - 1)],

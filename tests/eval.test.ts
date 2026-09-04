@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { test } from "node:test";
-import { piCliPath, reconcileEvalReport, runEvalTask, validateTask, writeEvalSummary } from "../src/eval.js";
+import { evaluateExpectation, loadTasks, piCliPath, reconcileEvalReport, runEvalTask, validateTask, writeEvalSummary } from "../src/eval.js";
 import { appendEvent, writeReport } from "../src/storage.js";
 import { renderHtml, renderMarkdown } from "../src/render.js";
 import type { RunReport } from "../src/schema.js";
@@ -11,6 +11,23 @@ import type { RunReport } from "../src/schema.js";
 test("任务 schema 要求验证命令", () => {
   assert.throws(() => validateTask({ id: "bad", prompt: "x", fixture: "y", validate: [] }), /验证命令/);
   assert.deepEqual(validateTask({ id: "ok", prompt: "x", fixture: "y", validate: ["npm test"] }).id, "ok");
+  assert.deepEqual(validateTask({
+    id: "negative",
+    prompt: "x",
+    fixture: "y",
+    validate: ["npm test"],
+    expected: { status: "failed", findings: ["tool-failure-unrecovered"], verification: "passed", changed: false },
+  }).expected, { status: "failed", findings: ["tool-failure-unrecovered"], verification: "passed", changed: false });
+  assert.deepEqual(validateTask({
+    id: "agent-validation",
+    prompt: "x",
+    fixture: "y",
+    validate: ["npm test"],
+    agentTools: ["read", "bash"],
+    agentRunsValidation: true,
+  }).agentTools, ["read", "bash"]);
+  assert.throws(() => validateTask({ id: "bad-expected", prompt: "x", fixture: "y", validate: ["npm test"], expected: { status: "bogus" } }), /expected/);
+  assert.throws(() => validateTask({ id: "bad-tools", prompt: "x", fixture: "y", validate: ["npm test"], agentTools: [] }), /agentTools/);
 });
 
 test("Pi CLI 固定使用项目本地依赖", () => {
@@ -36,12 +53,37 @@ test("评测汇总按配置计算成功率", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-run-review-test-"));
   const path = join(dir, "summary.json");
   await writeEvalSummary(path, [
-    { taskId: "a", configId: "baseline", status: "success", durationMs: 100, piExitCode: 0, validations: [] },
+    { taskId: "a", configId: "baseline", status: "success", durationMs: 100, piExitCode: 0, validations: [], expectationPassed: true },
     { taskId: "b", configId: "baseline", status: "failed", durationMs: 300, piExitCode: 0, validations: [] },
   ]);
   const summary = JSON.parse(await readFile(path, "utf8"));
   assert.equal(summary.byConfig.baseline.successRate, 0.5);
+  assert.equal(summary.byConfig.baseline.expectationPassRate, 1);
+  assert.equal(summary.byConfig.baseline.expectedRuns, 1);
   assert.equal(summary.byConfig.baseline.averageDurationMs, 200);
+});
+
+test("失败任务按状态、finding、验证和改动状态匹配预期", () => {
+  assert.equal(evaluateExpectation(
+    { status: "failed", findings: ["tool-failure-unrecovered"], verification: "passed", changed: false },
+    { status: "failed", report: { findings: [{ ruleId: "tool-failure-unrecovered" } as never], outcome: { verification: "passed" } } as never, changed: false },
+  ), true);
+  assert.equal(evaluateExpectation(
+    { status: "failed", findings: ["verification-failure-ignored"] },
+    { status: "failed", report: { findings: [], outcome: { verification: "failed" } } as never, changed: true },
+  ), false);
+  assert.equal(evaluateExpectation(undefined, { status: "success" }), undefined);
+});
+
+test("负向任务集包含四个带预期的独立场景", async () => {
+  const tasks = await loadTasks(join(process.cwd(), "eval", "failure-tasks"));
+  assert.deepEqual(tasks.map((task) => task.id), [
+    "tool-failure-unrecovered",
+    "ineffective-duplicate-call",
+    "verification-failure-ignored",
+    "no-change",
+  ]);
+  assert.equal(tasks.every((task) => task.expected !== undefined), true);
 });
 
 test("外部验证结果回写报告并消除未验证误报", async () => {
@@ -134,6 +176,30 @@ test("评测 runner 端到端执行假 Pi、验证并协调报告", async () => 
   assert.equal(result.validations[0]?.passed, true);
   assert.equal(result.report?.outcome.status, "success");
   assert.equal(result.report?.outcome.verification, "passed");
+});
+
+test("评测 runner 标记预期成功的失败场景", async () => {
+  const result = await runEvalTask(
+    {
+      id: "integration-failure-expected",
+      prompt: "FAIL_VALIDATION",
+      fixture: "fixtures/tiny-node",
+      validate: ["npm test"],
+      expected: { status: "failed", verification: "failed", findings: ["verification-failure-ignored"], changed: true },
+      timeoutMs: 5_000,
+    },
+    { id: "fake", model: "FAIL_VALIDATION" },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi-failure.mjs"),
+      keepWorkspace: false,
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.changed, true);
+  assert.equal(result.expectationPassed, true);
 });
 
 test("评测 runner 端到端保留验证失败诊断", async () => {

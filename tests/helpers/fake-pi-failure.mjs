@@ -18,6 +18,22 @@ await appendFile(join(storageDir, "events.jsonl"), `${JSON.stringify({
   type: "tool_finished",
   payload: { toolName: "edit", isError: false },
 })}\n`, "utf8");
+await appendFile(join(storageDir, "events.jsonl"), `${JSON.stringify({
+  schemaVersion: 1,
+  eventId: "fake-failure-verification",
+  runId,
+  timestamp: new Date().toISOString(),
+  type: "tool_finished",
+  payload: { toolName: "bash", args: "npm test", isError: true, exitCode: 1 },
+})}\n`, "utf8");
+await appendFile(join(storageDir, "events.jsonl"), `${JSON.stringify({
+  schemaVersion: 1,
+  eventId: "fake-failure-completion",
+  runId,
+  timestamp: new Date().toISOString(),
+  type: "message",
+  payload: { role: "assistant", summary: "任务完成" },
+})}\n`, "utf8");
 await writeFile(join(reportsDir, `${runId}.json`), `${JSON.stringify({
   schemaVersion: 1,
   run: { runId, startedAt: new Date().toISOString(), turnCount: 1, toolCount: 1 },

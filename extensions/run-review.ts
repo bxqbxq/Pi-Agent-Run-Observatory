@@ -40,6 +40,16 @@ function textSummary(value: unknown, config: Config, cwd: string): string {
   return redactText(String(value ?? ""), { cwd, maxChars });
 }
 
+function messageContentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(messageContentText).filter(Boolean).join("\n");
+  if (value && typeof value === "object") {
+    const item = value as { text?: unknown };
+    if (typeof item.text === "string") return item.text;
+  }
+  return "";
+}
+
 function modelName(model: unknown): string | undefined {
   if (!model || typeof model !== "object") return undefined;
   const item = model as { provider?: string; id?: string; name?: string };
@@ -189,7 +199,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     const message = event.message as { role?: string; content?: unknown; usage?: unknown; stopReason?: string; errorMessage?: string };
     const payload: Record<string, unknown> = {
       role: message.role,
-      summary: textSummary(message.content, config, ctx.cwd),
+      summary: textSummary(messageContentText(message.content), config, ctx.cwd),
       stopReason: message.stopReason,
       usage: redactValue(message.usage, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }),
       errorMessage: message.errorMessage ? textSummary(message.errorMessage, config, ctx.cwd) : undefined,

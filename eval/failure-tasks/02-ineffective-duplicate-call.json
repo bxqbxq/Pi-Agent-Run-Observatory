@@ -1,0 +1,1 @@
+{"id":"ineffective-duplicate-call","prompt":"请连续三次读取同一个明确存在的文件 `math.js`，每次使用完全相同的路径和参数，不要修改任何文件，完成后直接结束任务。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["negative","duplicate-call"],"expected":{"status":"failed","findings":["ineffective-duplicate-call"],"verification":"passed","changed":false}}

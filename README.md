@@ -47,6 +47,22 @@ npm run eval -- --configs eval/configs.json
 
 评测任务位于 `eval/tasks/`，每个任务从 `fixtures/` 的同一基线复制到独立临时工作区，并串行执行声明的验证命令。
 
+合成负向行为探针单独位于 `eval/failure-tasks/`，不会混入正常任务的成功率。运行该目录时，汇总中的 `expectationPassRate` 表示端到端结果是否符合任务声明的失败状态、finding、验证结果和改动状态：
+
+```powershell
+npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --output eval/results/failure-latest.json
+```
+
+正常基准固定为 `eval/tasks/` 下的 8 个任务；例如两个配置各跑一次：
+
+```powershell
+npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/results/8x2.json
+```
+
+负向任务的 `status` 预期为 `failed` 并不代表评测器失效。`expectationPassRate` 同时受模型是否按提示触发场景、插件是否采集到事件和规则是否正确识别影响，不能单独当作诊断准确率。规则正确性应以确定性的单元和集成测试为主，真实模型探针只作为端到端补充；正常任务成功率和负向探针预期匹配率也不能合并成一个分数。
+
+任务默认不向 Agent 开放命令工具，由 runner 在结束后执行外部验证。需要验证 Agent 如何处理内部失败命令时，任务必须显式声明 `agentTools` 和 `agentRunsValidation: true`；分析器只把失败验证之后出现的助手完成消息视为“验证失败被忽略”的证据。
+
 ## 边界
 
 本项目不替代 pi 原生 session JSONL，不覆盖 `pi-subagents` 的子代理观测，不上传云端，也不自动修复 Agent。完整设计见 [spec.md](./spec.md)。

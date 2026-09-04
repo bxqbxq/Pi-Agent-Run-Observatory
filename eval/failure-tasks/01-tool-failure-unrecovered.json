@@ -1,0 +1,1 @@
+{"id":"tool-failure-unrecovered","prompt":"请读取一个明确不存在的文件 `missing-file-for-negative-eval.txt`。读取失败后不要更换路径、重试或修改任何文件，直接结束任务。","fixture":"fixtures/tiny-node","validate":["npm test"],"tags":["negative","tool-failure"],"expected":{"status":"failed","findings":["tool-failure-unrecovered"],"verification":"passed","changed":false}}

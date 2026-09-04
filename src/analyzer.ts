@@ -50,6 +50,16 @@ function verificationPassed(event: ReviewEvent): boolean {
   return payload.isError !== true && payload.exitCode === 0;
 }
 
+function claimsCompletion(event: ReviewEvent): boolean {
+  if (event.type !== "message") return false;
+  const payload = event.payload as { role?: string; summary?: unknown; text?: unknown };
+  if (payload.role !== "assistant") return false;
+  const text = String(payload.summary ?? payload.text ?? "");
+  const reportsFailure = /未完成|没有完成|尚未完成|无法完成|不能完成|失败|未通过|没有通过|错误|阻塞|\b(?:failed|failure|error|blocked|incomplete|not\s+(?:done|complete|completed|finished|successful)|did not|could not)\b/i.test(text);
+  const reportsCompletion = /任务(?:已经|已)?完成|测试(?:已经|已)?通过|验证(?:已经|已)?通过|\b(?:done|completed|finished|success(?:ful)?|tests?\s+passed)\b/i.test(text);
+  return reportsCompletion && !reportsFailure;
+}
+
 export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Partial<AnalyzerConfig> = {}): RunReport {
   const options: AnalyzerConfig = {
     duplicateWindow: config.duplicateWindow ?? DEFAULT_ANALYZER_CONFIG.duplicateWindow,
@@ -123,8 +133,14 @@ function detectUnverifiedChanges(events: ReviewEvent[], config: AnalyzerConfig):
 function detectIgnoredVerificationFailures(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
   const failures = events.filter((event) => isVerification(event, config) && !verificationPassed(event));
   if (!failures.length) return [];
-  const laterSuccess = events.some((event, index) => index > events.indexOf(failures[failures.length - 1]) && isVerification(event, config) && verificationPassed(event));
-  if (laterSuccess) return [];
-  const completion = events.filter((event) => event.type === "message").slice(-1);
-  return [finding("verification-failure-ignored", "high", "high", [...failures, ...completion], "验证命令失败后没有成功重跑，run 仍然结束", "先修复验证失败，再重新执行验证命令并确认退出码为 0")];
+  for (const failure of [...failures].reverse()) {
+    const failureIndex = events.indexOf(failure);
+    const completionIndex = events.findIndex((event, index) => index > failureIndex && claimsCompletion(event));
+    if (completionIndex < 0) continue;
+    const recovered = events.slice(failureIndex + 1, completionIndex).some((event) => isVerification(event, config) && verificationPassed(event));
+    if (!recovered) {
+      return [finding("verification-failure-ignored", "high", "high", [failure, events[completionIndex]], "验证命令失败后没有成功重跑，run 仍然结束", "先修复验证失败，再重新执行验证命令并确认退出码为 0")];
+    }
+  }
+  return [];
 }
