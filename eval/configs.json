@@ -1,0 +1,4 @@
+[
+  { "id": "tomai-gpt-5.5", "model": "tomai/gpt-5.5", "thinking": "low" },
+  { "id": "deepseek-v4-flash", "model": "deepseek/deepseek-v4-flash", "thinking": "low" }
+]

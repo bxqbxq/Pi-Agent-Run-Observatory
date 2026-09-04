@@ -1,7 +1,7 @@
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { RunReport } from "./schema.js";
 
 export interface EvalTask {
@@ -61,6 +61,62 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
   });
 }
 
+async function terminateProcessTree(child: ChildProcess): Promise<void> {
+  if (process.platform === "win32" && child.pid) {
+    await new Promise<void>((resolveKill) => {
+      const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+      killer.once("close", () => resolveKill());
+      killer.once("error", () => resolveKill());
+    });
+    return;
+  }
+  child.kill();
+}
+
+function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
+  return new Promise((resolveResult) => {
+    const child = spawn(command, args, { cwd, windowsHide: true, env: process.env });
+    let output = "";
+    let timedOut = false;
+    let settledByReport = false;
+    let finished = false;
+    let checkingReport = false;
+    let reportPoll: NodeJS.Timeout | undefined;
+    const finish = (exitCode: number | null): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (reportPoll) clearInterval(reportPoll);
+      resolveResult({ exitCode: settledByReport ? 0 : exitCode, output: output.slice(-4000), timedOut });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void terminateProcessTree(child);
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => { output += String(chunk); });
+    child.stderr?.on("data", (chunk) => { output += String(chunk); });
+    child.on("error", (error) => { output += `\n${error.message}`; finish(null); });
+    child.on("close", (exitCode) => finish(exitCode));
+    reportPoll = setInterval(() => {
+      if (checkingReport || finished) return;
+      checkingReport = true;
+      void readdir(join(cwd, ".pi", "run-review", "reports"))
+        .then((files) => {
+          if (files.some((file) => file.endsWith(".json"))) {
+            settledByReport = true;
+            setTimeout(() => { void terminateProcessTree(child); }, 1_000);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => { checkingReport = false; });
+    }, 250);
+  });
+}
+
+export function piCliPath(rootDir: string): string {
+  return resolve(rootDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+}
+
 async function readLatestReport(workspace: string): Promise<RunReport | undefined> {
   const reportsDir = join(workspace, ".pi", "run-review", "reports");
   try {
@@ -76,21 +132,26 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
   const startedAt = Date.now();
   const workspace = await mkdtemp(join(tmpdir(), `pi-run-review-${task.id}-`));
   try {
-    await cp(resolve(options.rootDir, task.fixture), workspace, { recursive: true });
+    const fixtureDir = resolve(options.rootDir, task.fixture);
+    for (const entry of await readdir(fixtureDir)) {
+      await cp(join(fixtureDir, entry), join(workspace, entry), { recursive: true });
+    }
     // Materialize a deterministic local baseline so every task starts from a Git commit.
     await runProcess("git", ["init"], workspace, 30_000);
     await runProcess("git", ["config", "user.email", "pi-run-review@example.invalid"], workspace, 30_000);
     await runProcess("git", ["config", "user.name", "pi-run-review"], workspace, 30_000);
     await runProcess("git", ["add", "."], workspace, 30_000);
     await runProcess("git", ["commit", "-m", "fixture baseline"], workspace, 30_000);
-    const piCommand = process.platform === "win32" ? "pi.cmd" : "pi";
-    const args = ["-p", "--no-session", "--no-extensions", "-e", resolve(options.extensionPath)];
+    const args = [
+      "-p", "--approve", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
+      "--no-context-files", "--tools", "read,edit,write,grep,find,ls", "--mode", "json", "-e", resolve(options.extensionPath),
+    ];
     if (config.provider) args.push("--provider", config.provider);
     if (config.model) args.push("--model", config.model);
     if (config.thinking) args.push("--thinking", config.thinking);
     if (config.systemPrompt) args.push("--system-prompt", config.systemPrompt);
-    args.push(task.prompt);
-    const piResult = await runProcess(piCommand, args, workspace, task.timeoutMs ?? 300_000);
+    args.push(`${task.prompt}\n\n评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。`);
+    const piResult = await runPiProcess(process.execPath, [piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
     const validations: EvalResult["validations"] = [];
     if (!piResult.timedOut) {
       for (const command of task.validate) {
@@ -99,7 +160,16 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       }
     }
     const status = piResult.timedOut ? "timeout" : piResult.exitCode !== 0 ? "error" : validations.every((item) => item.passed) ? "success" : "failed";
-    return { taskId: task.id, configId: config.id, status, durationMs: Date.now() - startedAt, piExitCode: piResult.exitCode, validations, report: await readLatestReport(workspace), error: status === "error" ? piResult.output : undefined };
+    return {
+      taskId: task.id,
+      configId: config.id,
+      status,
+      durationMs: Date.now() - startedAt,
+      piExitCode: piResult.exitCode,
+      validations,
+      report: await readLatestReport(workspace),
+      error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : undefined,
+    };
   } finally {
     if (!options.keepWorkspace) await rm(workspace, { recursive: true, force: true });
   }
