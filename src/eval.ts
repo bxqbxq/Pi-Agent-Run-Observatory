@@ -2,7 +2,11 @@ import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { analyzeRun } from "./analyzer.js";
 import type { RunReport } from "./schema.js";
+import type { ReviewEvent } from "./schema.js";
+import { appendEvent, readEvents, writeReport } from "./storage.js";
 
 export interface EvalTask {
   id: string;
@@ -138,15 +142,47 @@ export function piCliPath(rootDir: string): string {
   return resolve(rootDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
 }
 
-async function readLatestReport(workspace: string): Promise<RunReport | undefined> {
+async function latestReportPath(workspace: string): Promise<string | undefined> {
   const reportsDir = join(workspace, ".pi", "run-review", "reports");
   try {
     const candidates = await Promise.all((await readdir(reportsDir)).filter((file) => file.endsWith(".json")).map(async (file) => ({ file, mtime: (await stat(join(reportsDir, file))).mtimeMs })));
     const latest = candidates.sort((a, b) => b.mtime - a.mtime)[0];
-    return latest ? JSON.parse(await readFile(join(reportsDir, latest.file), "utf8")) as RunReport : undefined;
+    return latest ? join(reportsDir, latest.file) : undefined;
   } catch {
     return undefined;
   }
+}
+
+async function readLatestReport(workspace: string): Promise<RunReport | undefined> {
+  const path = await latestReportPath(workspace);
+  return path ? JSON.parse(await readFile(path, "utf8")) as RunReport : undefined;
+}
+
+export async function reconcileEvalReport(workspace: string, validations: EvalResult["validations"]): Promise<RunReport | undefined> {
+  if (!validations.length) return readLatestReport(workspace);
+  const reportPath = await latestReportPath(workspace);
+  if (!reportPath) return undefined;
+  const report = JSON.parse(await readFile(reportPath, "utf8")) as RunReport;
+  const eventsPath = join(workspace, ".pi", "run-review", "events.jsonl");
+  const events = await readEvents(eventsPath);
+  const verificationEvents: ReviewEvent[] = validations.map((validation, index) => ({
+    schemaVersion: 1,
+    eventId: `evt_eval_verification_${index}_${randomUUID()}`,
+    runId: report.run.runId,
+    sessionId: report.run.sessionId,
+    timestamp: new Date().toISOString(),
+    type: "verification",
+    payload: {
+      command: validation.command,
+      exitCode: validation.exitCode ?? undefined,
+      passed: validation.passed,
+      source: "declared",
+    },
+  }));
+  for (const event of verificationEvents) await appendEvent(eventsPath, event);
+  const reconciled = analyzeRun([...events, ...verificationEvents], report.run);
+  await writeReport(reportPath, reconciled);
+  return reconciled;
 }
 
 export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; keepWorkspace?: boolean }): Promise<EvalResult> {
@@ -196,7 +232,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       durationMs: Date.now() - startedAt,
       piExitCode: piResult.exitCode,
       validations,
-      report: await readLatestReport(workspace),
+      report: await reconcileEvalReport(workspace, validations),
       error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : !changed ? "Agent 未产生工作区改动" : undefined,
     };
   } finally {
