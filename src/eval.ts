@@ -75,25 +75,46 @@ async function terminateProcessTree(child: ChildProcess): Promise<void> {
 
 function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolveResult) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, env: process.env });
+    const child = spawn(command, args, { cwd, windowsHide: true, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
+    let jsonBuffer = "";
     let timedOut = false;
-    let settledByReport = false;
+    let settled = false;
     let finished = false;
     let checkingReport = false;
     let reportPoll: NodeJS.Timeout | undefined;
+    let settleTimer: NodeJS.Timeout | undefined;
     const finish = (exitCode: number | null): void => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       if (reportPoll) clearInterval(reportPoll);
-      resolveResult({ exitCode: settledByReport ? 0 : exitCode, output: output.slice(-4000), timedOut });
+      if (settleTimer) clearTimeout(settleTimer);
+      resolveResult({ exitCode: settled ? 0 : exitCode, output: output.slice(-4000), timedOut });
     };
     const timer = setTimeout(() => {
       timedOut = true;
       void terminateProcessTree(child);
     }, timeoutMs);
-    child.stdout?.on("data", (chunk) => { output += String(chunk); });
+    const consumeOutput = (chunk: unknown): void => {
+      const text = String(chunk);
+      output += text;
+      jsonBuffer += text;
+      const lines = jsonBuffer.split(/\r?\n/);
+      jsonBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          if ((JSON.parse(line) as { type?: string }).type === "agent_settled") {
+            settled = true;
+            settleTimer ??= setTimeout(() => { void terminateProcessTree(child); }, 1_500);
+          }
+        } catch {
+          // Pi's JSON mode may interleave non-JSON diagnostics; ignore those lines.
+        }
+      }
+    };
+    child.stdout?.on("data", consumeOutput);
     child.stderr?.on("data", (chunk) => { output += String(chunk); });
     child.on("error", (error) => { output += `\n${error.message}`; finish(null); });
     child.on("close", (exitCode) => finish(exitCode));
@@ -103,8 +124,8 @@ function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: n
       void readdir(join(cwd, ".pi", "run-review", "reports"))
         .then((files) => {
           if (files.some((file) => file.endsWith(".json"))) {
-            settledByReport = true;
-            setTimeout(() => { void terminateProcessTree(child); }, 1_000);
+            settled = true;
+            settleTimer ??= setTimeout(() => { void terminateProcessTree(child); }, 1_500);
           }
         })
         .catch(() => undefined)
@@ -159,7 +180,15 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
         validations.push({ command, exitCode: validation.exitCode, passed: validation.exitCode === 0, output: validation.output });
       }
     }
-    const status = piResult.timedOut ? "timeout" : piResult.exitCode !== 0 ? "error" : validations.every((item) => item.passed) ? "success" : "failed";
+    const diff = await runProcess("git", ["status", "--porcelain"], workspace, 30_000);
+    const changed = diff.output.split(/\r?\n/).some((line) => line.trim() && !/^\?\? \.pi[\\/]/.test(line));
+    const status = piResult.timedOut
+      ? "timeout"
+      : piResult.exitCode !== 0
+        ? "error"
+        : validations.every((item) => item.passed) && changed
+          ? "success"
+          : "failed";
     return {
       taskId: task.id,
       configId: config.id,
@@ -168,7 +197,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       piExitCode: piResult.exitCode,
       validations,
       report: await readLatestReport(workspace),
-      error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : undefined,
+      error: status === "error" || status === "timeout" ? (piResult.output || (status === "timeout" ? "Pi process timed out" : undefined)) : !changed ? "Agent 未产生工作区改动" : undefined,
     };
   } finally {
     if (!options.keepWorkspace) await rm(workspace, { recursive: true, force: true });
