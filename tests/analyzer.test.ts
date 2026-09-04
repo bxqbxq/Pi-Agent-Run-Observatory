@@ -61,3 +61,21 @@ test("自定义验证命令参与成功判定", () => {
   assert.equal(report.outcome.status, "success");
   assert.equal(report.outcome.verification, "passed");
 });
+
+test("工具失败后同一工具成功重试时不判定为未恢复", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "read", isError: true, exitCode: 1 }),
+    event("tool_finished", "e2", { toolName: "read", isError: false, exitCode: 0 }),
+  ], run);
+  assert.equal(report.findings.some((item) => item.ruleId === "tool-failure-unrecovered"), false);
+});
+
+test("验证失败后成功重跑时不判定为被忽略", () => {
+  const report = analyzeRun([
+    event("verification", "e1", { command: "npm test", passed: false, exitCode: 1, source: "declared" }),
+    event("verification", "e2", { command: "npm test", passed: true, exitCode: 0, source: "declared" }),
+  ], run);
+  assert.equal(report.outcome.status, "failed");
+  assert.equal(report.outcome.verification, "failed");
+  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
+});

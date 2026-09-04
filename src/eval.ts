@@ -6,7 +6,14 @@ import { randomUUID } from "node:crypto";
 import { analyzeRun } from "./analyzer.js";
 import type { RunReport } from "./schema.js";
 import type { ReviewEvent } from "./schema.js";
+import { renderHtml, renderMarkdown } from "./render.js";
 import { appendEvent, readEvents, writeReport } from "./storage.js";
+
+function childEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+}
 
 export interface EvalTask {
   id: string;
@@ -54,7 +61,7 @@ export async function loadTasks(tasksDir: string): Promise<EvalTask[]> {
 
 function runProcess(command: string, args: string[], cwd: string, timeoutMs: number, shell = false): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolveResult) => {
-    const child = spawn(command, args, { cwd, shell, windowsHide: true, env: process.env });
+    const child = spawn(command, args, { cwd, shell, windowsHide: true, env: childEnvironment() });
     let output = "";
     child.stdout?.on("data", (chunk) => { output += String(chunk); });
     child.stderr?.on("data", (chunk) => { output += String(chunk); });
@@ -79,7 +86,7 @@ async function terminateProcessTree(child: ChildProcess): Promise<void> {
 
 function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolveResult) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, windowsHide: true, env: childEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let jsonBuffer = "";
     let timedOut = false;
@@ -142,8 +149,8 @@ export function piCliPath(rootDir: string): string {
   return resolve(rootDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
 }
 
-async function latestReportPath(workspace: string): Promise<string | undefined> {
-  const reportsDir = join(workspace, ".pi", "run-review", "reports");
+async function latestReportPath(workspace: string, storageDir = ".pi/run-review"): Promise<string | undefined> {
+  const reportsDir = join(workspace, storageDir, "reports");
   try {
     const candidates = await Promise.all((await readdir(reportsDir)).filter((file) => file.endsWith(".json")).map(async (file) => ({ file, mtime: (await stat(join(reportsDir, file))).mtimeMs })));
     const latest = candidates.sort((a, b) => b.mtime - a.mtime)[0];
@@ -153,17 +160,17 @@ async function latestReportPath(workspace: string): Promise<string | undefined> 
   }
 }
 
-async function readLatestReport(workspace: string): Promise<RunReport | undefined> {
-  const path = await latestReportPath(workspace);
+async function readLatestReport(workspace: string, storageDir = ".pi/run-review"): Promise<RunReport | undefined> {
+  const path = await latestReportPath(workspace, storageDir);
   return path ? JSON.parse(await readFile(path, "utf8")) as RunReport : undefined;
 }
 
-export async function reconcileEvalReport(workspace: string, validations: EvalResult["validations"]): Promise<RunReport | undefined> {
-  if (!validations.length) return readLatestReport(workspace);
-  const reportPath = await latestReportPath(workspace);
+export async function reconcileEvalReport(workspace: string, validations: EvalResult["validations"], storageDir = ".pi/run-review"): Promise<RunReport | undefined> {
+  if (!validations.length) return readLatestReport(workspace, storageDir);
+  const reportPath = await latestReportPath(workspace, storageDir);
   if (!reportPath) return undefined;
   const report = JSON.parse(await readFile(reportPath, "utf8")) as RunReport;
-  const eventsPath = join(workspace, ".pi", "run-review", "events.jsonl");
+  const eventsPath = join(dirname(dirname(reportPath)), "events.jsonl");
   const events = await readEvents(eventsPath);
   const verificationEvents: ReviewEvent[] = validations.map((validation, index) => ({
     schemaVersion: 1,
@@ -182,10 +189,13 @@ export async function reconcileEvalReport(workspace: string, validations: EvalRe
   for (const event of verificationEvents) await appendEvent(eventsPath, event);
   const reconciled = analyzeRun([...events, ...verificationEvents], report.run);
   await writeReport(reportPath, reconciled);
+  const reportDir = dirname(reportPath);
+  await writeFile(join(reportDir, `${reconciled.run.runId}.md`), renderMarkdown(reconciled), "utf8");
+  await writeFile(join(reportDir, `${reconciled.run.runId}.html`), renderHtml(reconciled), "utf8");
   return reconciled;
 }
 
-export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; keepWorkspace?: boolean }): Promise<EvalResult> {
+export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; piCliPath?: string; keepWorkspace?: boolean }): Promise<EvalResult> {
   const startedAt = Date.now();
   const workspace = await mkdtemp(join(tmpdir(), `pi-run-review-${task.id}-`));
   try {
@@ -208,7 +218,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
     if (config.thinking) args.push("--thinking", config.thinking);
     if (config.systemPrompt) args.push("--system-prompt", config.systemPrompt);
     args.push(`${task.prompt}\n\n评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。`);
-    const piResult = await runPiProcess(process.execPath, [piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
+    const piResult = await runPiProcess(process.execPath, [options.piCliPath ?? piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
     const validations: EvalResult["validations"] = [];
     if (!piResult.timedOut) {
       for (const command of task.validate) {

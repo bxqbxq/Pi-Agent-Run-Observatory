@@ -3,8 +3,9 @@ import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
 import { test } from "node:test";
-import { piCliPath, reconcileEvalReport, validateTask, writeEvalSummary } from "../src/eval.js";
+import { piCliPath, reconcileEvalReport, runEvalTask, validateTask, writeEvalSummary } from "../src/eval.js";
 import { appendEvent, writeReport } from "../src/storage.js";
+import { renderHtml, renderMarkdown } from "../src/render.js";
 import type { RunReport } from "../src/schema.js";
 
 test("任务 schema 要求验证命令", () => {
@@ -76,4 +77,80 @@ test("外部验证结果回写报告并消除未验证误报", async () => {
   assert.equal(reconciled?.outcome.status, "success");
   assert.equal(reconciled?.outcome.verification, "passed");
   assert.equal(reconciled?.findings.some((item) => item.ruleId === "change-without-verification"), false);
+});
+
+test("协调报告同步更新三种格式并支持自定义存储目录", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-reconcile-format-test-"));
+  const reportDir = join(workspace, ".pi", "custom-review", "reports");
+  const report: RunReport = {
+    schemaVersion: 1,
+    run: { runId: "run_format", startedAt: "2026-09-03T00:00:00.000Z", turnCount: 1, toolCount: 1 },
+    outcome: { status: "unknown", source: "unknown", verification: "missing" },
+    findings: [],
+  };
+  await mkdir(reportDir, { recursive: true });
+  const eventsPath = join(workspace, ".pi", "custom-review", "events.jsonl");
+  await appendEvent(eventsPath, {
+    schemaVersion: 1,
+    eventId: "format-edit",
+    runId: report.run.runId,
+    timestamp: "2026-09-03T00:00:01.000Z",
+    type: "tool_finished",
+    payload: { toolName: "edit", isError: false },
+  });
+  const reportPath = join(reportDir, "run_format.json");
+  await writeReport(reportPath, report);
+  await writeFile(join(reportDir, "run_format.md"), renderMarkdown(report), "utf8");
+  await writeFile(join(reportDir, "run_format.html"), renderHtml(report), "utf8");
+
+  const reconciled = await reconcileEvalReport(workspace, [{ command: "npm test", exitCode: 0, passed: true, output: "" }], ".pi/custom-review");
+  const markdown = await readFile(join(reportDir, "run_format.md"), "utf8");
+  const html = await readFile(join(reportDir, "run_format.html"), "utf8");
+  const events = (await readFile(eventsPath, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as { type: string });
+
+  assert.equal(reconciled?.outcome.status, "success");
+  assert.equal(reconciled?.outcome.verification, "passed");
+  assert.match(markdown, /结果：\*\*success\*\*/);
+  assert.match(markdown, /验证：\*\*passed\*\*/);
+  assert.match(html, /结果：\*\*success\*\*/);
+  assert.match(html, /验证：\*\*passed\*\*/);
+  assert.equal(events.filter((event) => event.type === "verification").length, 1);
+});
+
+test("评测 runner 端到端执行假 Pi、验证并协调报告", async () => {
+  const result = await runEvalTask(
+    { id: "integration", prompt: "完成任务", fixture: "fixtures/tiny-node", validate: ["npm test"], timeoutMs: 5_000 },
+    { id: "fake" },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi.mjs"),
+      keepWorkspace: false,
+    },
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.validations.length, 1);
+  assert.equal(result.validations[0]?.passed, true);
+  assert.equal(result.report?.outcome.status, "success");
+  assert.equal(result.report?.outcome.verification, "passed");
+});
+
+test("评测 runner 端到端保留验证失败诊断", async () => {
+  const result = await runEvalTask(
+    { id: "integration-failure", prompt: "FAIL_VALIDATION", fixture: "fixtures/tiny-node", validate: ["npm test"], timeoutMs: 5_000 },
+    { id: "fake", model: "FAIL_VALIDATION" },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi-failure.mjs"),
+      keepWorkspace: false,
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.validations[0]?.passed, false);
+  assert.equal(result.report?.outcome.status, "failed");
+  assert.equal(result.report?.outcome.verification, "failed");
+  assert.equal(result.report?.findings.some((item) => item.ruleId === "verification-failure-ignored"), true);
 });
