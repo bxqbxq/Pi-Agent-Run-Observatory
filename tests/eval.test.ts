@@ -260,6 +260,17 @@ test("协调报告同步更新三种格式并支持自定义存储目录", async
   assert.equal(events.filter((event) => event.type === "verification").length, 1);
 });
 
+test("报告明确标记完整采集模式", () => {
+  const report: RunReport = {
+    schemaVersion: 1,
+    run: { runId: "run_full", startedAt: "2026-09-03T00:00:00.000Z", turnCount: 1, toolCount: 0, captureMode: "full" },
+    outcome: { status: "unknown", source: "unknown", verification: "missing" },
+    findings: [],
+  };
+  assert.match(renderMarkdown(report), /采集模式：full/);
+  assert.match(renderHtml(report), /采集模式：full/);
+});
+
 test("评测 runner 端到端执行假 Pi、验证并协调报告", async () => {
   const result = await runEvalTask(
     { id: "integration", prompt: "完成任务", fixture: "fixtures/tiny-node", validate: ["npm test"], timeoutMs: 5_000 },

@@ -36,12 +36,26 @@ function normalizedArgs(args: unknown): string {
   return String(args);
 }
 
-function isVerification(event: ReviewEvent, config: AnalyzerConfig): boolean {
-  if (event.type === "verification") return true;
-  if (event.type !== "tool_finished") return false;
+function verificationKey(event: ReviewEvent, config: AnalyzerConfig): string | undefined {
+  if (event.type === "verification") {
+    const command = (event.payload as unknown as VerificationPayload).command.replace(/\s+/g, " ").trim().toLowerCase();
+    const index = config.verificationCommands.findIndex((candidate) => command.includes(candidate.toLowerCase()));
+    return index >= 0 ? `verification:${index}` : command;
+  }
+  if (event.type !== "tool_finished") return undefined;
   const payload = payloadOf(event);
+  if (payload.verificationKey) return payload.verificationKey;
+  if (payload.verificationCommand) {
+    const index = config.verificationCommands.findIndex((candidate) => payload.verificationCommand?.toLowerCase() === candidate.toLowerCase());
+    return index >= 0 ? `verification:${index}` : payload.verificationCommand.toLowerCase();
+  }
   const name = `${payload.toolName ?? ""} ${payload.args ?? ""} ${payload.resultSummary ?? ""}`.toLowerCase();
-  return config.verificationCommands.some((command) => name.includes(command.toLowerCase()));
+  const index = config.verificationCommands.findIndex((command) => name.includes(command.toLowerCase()));
+  return index >= 0 ? `verification:${index}` : undefined;
+}
+
+function isVerification(event: ReviewEvent, config: AnalyzerConfig): boolean {
+  return verificationKey(event, config) !== undefined;
 }
 
 function verificationPassed(event: ReviewEvent): boolean {
@@ -52,8 +66,9 @@ function verificationPassed(event: ReviewEvent): boolean {
 
 function claimsCompletion(event: ReviewEvent): boolean {
   if (event.type !== "message") return false;
-  const payload = event.payload as { role?: string; summary?: unknown; text?: unknown };
+  const payload = event.payload as { role?: string; summary?: unknown; text?: unknown; contentSummary?: { completionClaim?: boolean } };
   if (payload.role !== "assistant") return false;
+  if (payload.contentSummary?.completionClaim !== undefined) return payload.contentSummary.completionClaim;
   const text = String(payload.summary ?? payload.text ?? "");
   const reportsFailure = /未完成|没有完成|尚未完成|无法完成|不能完成|失败|未通过|没有通过|错误|阻塞|\b(?:failed|failure|error|blocked|incomplete|not\s+(?:done|complete|completed|finished|successful)|did not|could not)\b/i.test(text);
   const reportsCompletion = /任务(?:已经|已)?完成|测试(?:已经|已)?通过|验证(?:已经|已)?通过|\b(?:done|completed|finished|success(?:ful)?|tests?\s+passed)\b/i.test(text);
@@ -74,8 +89,11 @@ export function analyzeRun(events: ReviewEvent[], run: RunSummary, config: Parti
     ...detectIgnoredVerificationFailures(events, options),
   ];
   const verificationEvents = events.filter((event) => isVerification(event, options));
-  const hasFailedVerification = verificationEvents.some((event) => !verificationPassed(event));
-  const hasPassedVerification = verificationEvents.some(verificationPassed);
+  const latestVerificationByKey = new Map<string, ReviewEvent>();
+  for (const event of verificationEvents) latestVerificationByKey.set(verificationKey(event, options) ?? event.eventId, event);
+  const effectiveVerificationEvents = [...latestVerificationByKey.values()];
+  const hasFailedVerification = effectiveVerificationEvents.some((event) => !verificationPassed(event));
+  const hasPassedVerification = effectiveVerificationEvents.some(verificationPassed);
   const verification = hasFailedVerification ? "failed" : hasPassedVerification ? "passed" : "missing";
   let status: RunOutcomeStatus = hasFailedVerification ? "failed" : verification === "missing" ? "unknown" : "success";
   if (findings.some((item) => item.severity === "high") && status === "success") status = "partial";
@@ -113,9 +131,12 @@ function detectDuplicateCalls(events: ReviewEvent[], config: AnalyzerConfig): Fi
   for (let index = 0; index < calls.length; index += 1) {
     const current = calls[index];
     const currentPayload = payloadOf(current);
-    const key = `${currentPayload.toolName ?? ""}:${normalizedArgs(currentPayload.args)}`;
+    const key = `${currentPayload.toolName ?? ""}:${currentPayload.argsSummary?.hash ?? normalizedArgs(currentPayload.args)}`;
     const window = calls.slice(Math.max(0, index - config.duplicateWindow + 1), index + 1);
-    const matches = window.filter((candidate) => `${payloadOf(candidate).toolName ?? ""}:${normalizedArgs(payloadOf(candidate).args)}` === key);
+    const matches = window.filter((candidate) => {
+      const payload = payloadOf(candidate);
+      return `${payload.toolName ?? ""}:${payload.argsSummary?.hash ?? normalizedArgs(payload.args)}` === key;
+    });
     if (matches.length >= config.duplicateThreshold) {
       results.push(finding("ineffective-duplicate-call", "medium", matches.length >= config.duplicateThreshold + 1 ? "high" : "medium", matches, `相同工具调用在最近 ${config.duplicateWindow} 次调用中出现 ${matches.length} 次`, "检查参数、读取结果和当前状态，避免重复执行没有新信息的调用"));
       break;
@@ -137,7 +158,8 @@ function detectIgnoredVerificationFailures(events: ReviewEvent[], config: Analyz
     const failureIndex = events.indexOf(failure);
     const completionIndex = events.findIndex((event, index) => index > failureIndex && claimsCompletion(event));
     if (completionIndex < 0) continue;
-    const recovered = events.slice(failureIndex + 1, completionIndex).some((event) => isVerification(event, config) && verificationPassed(event));
+    const failureKey = verificationKey(failure, config);
+    const recovered = events.slice(failureIndex + 1, completionIndex).some((event) => verificationKey(event, config) === failureKey && verificationPassed(event));
     if (!recovered) {
       return [finding("verification-failure-ignored", "high", "high", [failure, events[completionIndex]], "验证命令失败后没有成功重跑，run 仍然结束", "先修复验证失败，再重新执行验证命令并确认退出码为 0")];
     }

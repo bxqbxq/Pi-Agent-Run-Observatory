@@ -51,6 +51,7 @@ export interface RunSummary {
   durationMs?: number;
   turnCount: number;
   toolCount: number;
+  captureMode?: "redacted" | "full";
   usage?: Record<string, unknown>;
   cost?: number | null;
 }
@@ -88,6 +89,12 @@ export const DEFAULT_ANALYZER_CONFIG: AnalyzerConfig = {
 export interface NormalizedToolPayload {
   toolName: string;
   args?: unknown;
+  argsSummary?: {
+    structure: unknown;
+    hash: string;
+  };
+  verificationKey?: string;
+  verificationCommand?: string;
   resultSummary?: string;
   isError?: boolean;
   exitCode?: number;

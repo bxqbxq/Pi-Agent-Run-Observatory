@@ -36,6 +36,12 @@ pi -e ./extensions/run-review.ts
 
 `--explain` 使用当前模型对规则证据做按需解释；解释不会覆盖规则结论，也不会计入主 Agent 的统计。
 
+## 隐私模式
+
+默认 `captureFullContent` 为 `false`。事件日志不会保存用户 Prompt、助手回复、工具参数或 provider payload 原文：消息只记录长度和完成/失败信号，参数只记录字段结构和经过脱敏后计算的 SHA-256 指纹。指纹用于判断重复调用，只表示两个参数是否相同，不是对原文的加密存储。工具结果和错误仍会经过凭据、项目路径、外部绝对路径替换及长度截断后保存。
+
+只有在 `.pi/run-review/config.json` 中显式设置 `"captureFullContent": true` 时，才会保存经过凭据和路径脱敏的完整内容。JSON、Markdown 和 HTML 报告都会以 `captureMode: full` 或“采集模式：full”标记该模式。修改配置不会清理此前生成的事件和报告，需要由用户按本地数据保留策略自行处理旧文件。
+
 ## 评测
 
 先复制示例配置并填入可用模型：

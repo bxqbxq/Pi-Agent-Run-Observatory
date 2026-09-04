@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { analyzeRun } from "../src/analyzer.js";
-import { redactText, redactValue } from "../src/redaction.js";
+import { redactText, redactValue, summarizeMessageContent, summarizeValue } from "../src/redaction.js";
 import { appendEvent, readEvents, writeReport } from "../src/storage.js";
 import { renderHtml, renderMarkdown } from "../src/render.js";
 import type { ReviewEvent, RunSummary } from "../src/schema.js";
@@ -55,6 +55,23 @@ function modelName(model: unknown): string | undefined {
   const item = model as { provider?: string; id?: string; name?: string };
   if (item.provider && item.id) return `${item.provider}/${item.id}`;
   return item.name ?? item.id;
+}
+
+function capturedValue(value: unknown, config: Config, cwd: string): unknown {
+  return config.captureFullContent
+    ? redactValue(value, { cwd })
+    : summarizeValue(value, { cwd });
+}
+
+function verificationHint(value: unknown, commands: string[] | undefined): string | undefined {
+  let text: string;
+  try {
+    text = JSON.stringify(value).toLowerCase();
+  } catch {
+    text = String(value).toLowerCase();
+  }
+  const index = (commands ?? ["test", "build", "typecheck", "lint"]).findIndex((command) => text.includes(command.toLowerCase()));
+  return index >= 0 ? `verification:${index}` : undefined;
 }
 
 async function gitCommit(cwd: string): Promise<string | undefined> {
@@ -130,13 +147,14 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
         startedAt,
         turnCount: 0,
         toolCount: 0,
+        captureMode: config.captureFullContent ? "full" : "redacted",
       },
       eventsPath: join(baseDir, "events.jsonl"),
       reportDir: join(baseDir, "reports"),
       toolStarts: new Map(),
       toolArgs: new Map(),
     };
-    await append(makeEvent("run_started", { model: active.summary.model, gitCommit: active.summary.gitCommit }));
+    await append(makeEvent("run_started", { model: active.summary.model, gitCommit: active.summary.gitCommit, captureMode: active.summary.captureMode }));
   });
 
   pi.on("turn_start", async (event) => {
@@ -154,7 +172,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    await append(makeEvent("tool_call", { toolName: event.toolName, input: redactValue(event.input, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }) }, { toolCallId: event.toolCallId }));
+    await append(makeEvent("tool_call", { toolName: event.toolName, input: capturedValue(event.input, config, ctx.cwd), verificationKey: verificationHint(event.input, config.verificationCommands) }, { toolCallId: event.toolCallId }));
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -168,7 +186,8 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     active.toolArgs.set(event.toolCallId, event.args);
     await append(makeEvent("tool_started", {
       toolName: event.toolName,
-      args: redactValue(event.args, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }),
+      ...(config.captureFullContent ? { args: capturedValue(event.args, config, ctx.cwd) } : { argsSummary: capturedValue(event.args, config, ctx.cwd) }),
+      verificationKey: verificationHint(event.args, config.verificationCommands),
     }, { toolCallId: event.toolCallId }));
   });
 
@@ -187,7 +206,8 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     const result = event.result as { exitCode?: number; code?: number; details?: { exitCode?: number; code?: number } } | undefined;
     await append(makeEvent("tool_finished", {
       toolName: event.toolName,
-      args: redactValue(args, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }),
+      ...(config.captureFullContent ? { args: capturedValue(args, config, ctx.cwd) } : { argsSummary: capturedValue(args, config, ctx.cwd) }),
+      verificationKey: verificationHint(args, config.verificationCommands),
       isError: event.isError,
       exitCode: result?.exitCode ?? result?.code ?? result?.details?.exitCode ?? result?.details?.code,
       durationMs: started ? Date.now() - started : undefined,
@@ -197,9 +217,11 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
 
   pi.on("message_end", async (event, ctx) => {
     const message = event.message as { role?: string; content?: unknown; usage?: unknown; stopReason?: string; errorMessage?: string };
+    const content = messageContentText(message.content);
     const payload: Record<string, unknown> = {
       role: message.role,
-      summary: textSummary(messageContentText(message.content), config, ctx.cwd),
+      contentSummary: summarizeMessageContent(content),
+      ...(config.captureFullContent ? { content: textSummary(content, config, ctx.cwd) } : {}),
       stopReason: message.stopReason,
       usage: redactValue(message.usage, { cwd: ctx.cwd, maxChars: config.summaryMaxChars ?? 1000 }),
       errorMessage: message.errorMessage ? textSummary(message.errorMessage, config, ctx.cwd) : undefined,
@@ -211,12 +233,17 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     await append(makeEvent("model_selected", { model: modelName(event.model), source: event.source }));
   });
 
-  pi.on("before_provider_request", async (event) => {
-    await append(makeEvent("provider_request", { payload: redactValue(event.payload, { maxChars: config.summaryMaxChars ?? 1000 }) }));
+  pi.on("before_provider_request", async (event, ctx) => {
+    await append(makeEvent("provider_request", config.captureFullContent
+      ? { payload: capturedValue(event.payload, config, ctx.cwd) }
+      : { payloadSummary: capturedValue(event.payload, config, ctx.cwd) }));
   });
 
-  pi.on("after_provider_response", async (event) => {
-    await append(makeEvent("provider_response", { status: event.status, headers: redactValue(event.headers, { maxChars: config.summaryMaxChars ?? 1000 }) }));
+  pi.on("after_provider_response", async (event, ctx) => {
+    await append(makeEvent("provider_response", {
+      status: event.status,
+      ...(config.captureFullContent ? { headers: capturedValue(event.headers, config, ctx.cwd) } : { headerSummary: capturedValue(event.headers, config, ctx.cwd) }),
+    }));
   });
 
   pi.on("agent_settled", async (_event, ctx) => {

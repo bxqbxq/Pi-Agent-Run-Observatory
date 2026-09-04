@@ -75,9 +75,38 @@ test("验证失败后成功重跑时不判定为被忽略", () => {
     event("verification", "e1", { command: "npm test", passed: false, exitCode: 1, source: "declared" }),
     event("verification", "e2", { command: "npm test", passed: true, exitCode: 0, source: "declared" }),
   ], run);
+  assert.equal(report.outcome.status, "success");
+  assert.equal(report.outcome.verification, "passed");
+  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
+});
+
+test("一个验证恢复时不会掩盖另一项尚未恢复的失败", () => {
+  const report = analyzeRun([
+    event("verification", "e1", { command: "npm test", passed: false, exitCode: 1, source: "declared" }),
+    event("verification", "e2", { command: "npm run typecheck", passed: false, exitCode: 1, source: "declared" }),
+    event("verification", "e3", { command: "npm test", passed: true, exitCode: 0, source: "declared" }),
+  ], run);
   assert.equal(report.outcome.status, "failed");
   assert.equal(report.outcome.verification, "failed");
-  assert.equal(report.findings.some((item) => item.ruleId === "verification-failure-ignored"), false);
+});
+
+test("插件内验证分类和 runner 完整命令按同类验证结算", () => {
+  const report = analyzeRun([
+    event("tool_finished", "e1", { toolName: "bash", verificationKey: "verification:0", isError: true, exitCode: 1 }),
+    event("verification", "e2", { command: "npm test", passed: true, exitCode: 0, source: "declared" }),
+  ], run);
+  assert.equal(report.outcome.status, "partial");
+  assert.equal(report.outcome.verification, "passed");
+});
+
+test("隐私参数摘要的哈希仍可用于重复调用检测", () => {
+  const argsSummary = { structure: { type: "object", fields: { path: "string" } }, hash: "sha256:same" };
+  const report = analyzeRun([
+    event("tool_started", "e1", { toolName: "read", argsSummary }),
+    event("tool_started", "e2", { toolName: "read", argsSummary }),
+    event("tool_started", "e3", { toolName: "read", argsSummary }),
+  ], run);
+  assert.equal(report.findings.some((item) => item.ruleId === "ineffective-duplicate-call"), true);
 });
 
 test("Agent 完成后才发生的外部验证失败不算被忽略", () => {

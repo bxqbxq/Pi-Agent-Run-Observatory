@@ -7,6 +7,7 @@ export function renderMarkdown(report: RunReport): string {
     `- 结果：**${report.outcome.status}**`,
     `- 验证：**${report.outcome.verification}**`,
     `- 模型：${report.run.model ?? "unknown"}`,
+    `- 采集模式：${report.run.captureMode ?? "redacted"}`,
     `- 回合 / 工具：${report.run.turnCount} / ${report.run.toolCount}`,
     `- Findings：${report.findings.length}`,
     "",
