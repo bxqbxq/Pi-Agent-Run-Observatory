@@ -335,6 +335,22 @@ test("评测 runner 端到端执行假 Pi、验证并协调报告", async () => 
   assert.equal(result.report?.outcome.verification, "passed");
 });
 
+test("评测 runner 等待 agent_settled 后异步生成的报告", async () => {
+  const result = await runEvalTask(
+    { id: "delayed-report", prompt: "DELAY_REPORT", fixture: "fixtures/tiny-node", validate: ["npm test"], timeoutMs: 5_000 },
+    { id: "fake" },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi.mjs"),
+      keepWorkspace: false,
+    },
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.report?.outcome.verification, "passed");
+});
+
 test("隐藏验收夹具仅在 Agent 结束后注入并记录实际改动文件", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-run-review-hidden-acceptance-test-"));
   const fixture = join(root, "fixture");

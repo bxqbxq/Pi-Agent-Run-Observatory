@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import runReviewExtension from "../extensions/run-review.js";
 import { summarizeValue, type MessageContentSummary, type ValueSummary } from "../src/redaction.js";
 import type { ReviewEvent, RunReport } from "../src/schema.js";
+
+const execFileAsync = promisify(execFile);
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -23,6 +27,22 @@ async function hasJsonReport(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function initGitFixture(cwd: string): Promise<void> {
+  await writeFile(join(cwd, "tracked.txt"), "before\n", "utf8");
+  await execFileAsync("git", ["init", "--quiet"], { cwd, windowsHide: true });
+  await execFileAsync("git", ["config", "user.email", "pi-run-review@example.invalid"], { cwd, windowsHide: true });
+  await execFileAsync("git", ["config", "user.name", "pi-run-review"], { cwd, windowsHide: true });
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd, windowsHide: true });
+  await execFileAsync("git", ["commit", "--quiet", "-m", "fixture"], { cwd, windowsHide: true });
+}
+
+async function readOnlyReport(reportsDir: string): Promise<RunReport> {
+  await waitFor(() => hasJsonReport(reportsDir), "报告未生成");
+  const reportFiles = (await readdir(reportsDir)).filter((file) => file.endsWith(".json"));
+  assert.equal(reportFiles.length, 1);
+  return JSON.parse(await readFile(join(reportsDir, reportFiles[0]), "utf8")) as RunReport;
 }
 
 function createExtensionHarness(): {
@@ -233,6 +253,70 @@ test("活跃 run 含损坏 JSONL 行时仍生成报告并提示跳过", async ()
   assert.equal((await readdir(reportsDir)).some((file) => file.endsWith(".json")), true);
 });
 
+test("Git 工作区指纹确认 run 期间的真实改动", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-git-change-"));
+  await initGitFixture(cwd);
+  const { invoke, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await writeFile(join(cwd, "tracked.txt"), "after\n", "utf8");
+  await invoke("agent_settled", {}, ctx);
+
+  const report = await readOnlyReport(join(cwd, ".pi", "run-review", "reports"));
+  const finding = report.findings.find((item) => item.ruleId === "change-without-verification");
+  assert.equal(finding?.confidence, "high");
+});
+
+test("写入工具成功但 Git 工作区未变化时不误报改动未验证", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-git-unchanged-"));
+  await initGitFixture(cwd);
+  const { invoke, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("tool_execution_start", { toolCallId: "call_edit", toolName: "edit", args: { path: "tracked.txt" } }, ctx);
+  await invoke("tool_execution_end", { toolCallId: "call_edit", toolName: "edit", isError: false, result: { message: "unchanged" } }, ctx);
+  await invoke("agent_settled", {}, ctx);
+
+  const report = await readOnlyReport(join(cwd, ".pi", "run-review", "reports"));
+  assert.equal(report.findings.some((item) => item.ruleId === "change-without-verification"), false);
+});
+
+test("Git 工作区指纹能识别 run 期间删除的文件", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-git-delete-"));
+  await initGitFixture(cwd);
+  const { invoke, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("tool_execution_start", { toolCallId: "call_delete", toolName: "edit", args: { path: "tracked.txt" } }, ctx);
+  await unlink(join(cwd, "tracked.txt"));
+  await invoke("tool_execution_end", { toolCallId: "call_delete", toolName: "edit", isError: false, result: { message: "deleted" } }, ctx);
+  await invoke("agent_settled", {}, ctx);
+
+  const report = await readOnlyReport(join(cwd, ".pi", "run-review", "reports"));
+  const finding = report.findings.find((item) => item.ruleId === "change-without-verification");
+  assert.equal(finding?.confidence, "high");
+});
+
+test("非 Git 工作区只能将写入事件判为低置信度改动", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-non-git-"));
+  const { invoke, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("tool_execution_start", { toolCallId: "call_write", toolName: "write", args: { path: "created.txt" } }, ctx);
+  await writeFile(join(cwd, "created.txt"), "created\n", "utf8");
+  await invoke("tool_execution_end", { toolCallId: "call_write", toolName: "write", isError: false, result: { message: "created" } }, ctx);
+  await invoke("agent_settled", {}, ctx);
+
+  const report = await readOnlyReport(join(cwd, ".pi", "run-review", "reports"));
+  const finding = report.findings.find((item) => item.ruleId === "change-without-verification");
+  assert.equal(finding?.severity, "medium");
+  assert.equal(finding?.confidence, "low");
+});
+
 test("并发事件串行写入且交错工具完成仍按 toolCallId 关联参数", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-concurrent-"));
   const { invoke, notifications } = createExtensionHarness();
@@ -277,8 +361,7 @@ test("agent_end 不关闭 run，后续事件保留到 agent_settled 才生成报
   const reportsDir = join(cwd, ".pi", "run-review", "reports");
   assert.equal(await hasJsonReport(reportsDir), false);
   await invoke("agent_settled", {}, ctx);
-  assert.equal(notifications.some((message) => message.includes("报告生成已排队")), false);
-  await waitFor(() => notifications.some((message) => message.includes("报告生成已排队")), "settled 摘要未在后台生成");
+  assert.equal(notifications.some((message) => message.includes("报告生成已排队")), true);
   await waitFor(() => hasJsonReport(reportsDir), "agent_settled 后未异步生成报告");
 
   const events = (await readFile(join(cwd, ".pi", "run-review", "events.jsonl"), "utf8"))

@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { promisify } from "node:util";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, readlink, readdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { analyzeRun } from "../src/analyzer.js";
 import { parseRunReviewConfig, type RunReviewConfig as Config } from "../src/config.js";
@@ -15,6 +16,7 @@ import type { ReviewEvent, RunSummary } from "../src/schema.js";
 const execFileAsync = promisify(execFile);
 
 interface ActiveRun {
+  cwd: string;
   summary: RunSummary;
   config: Config;
   eventsPath: string;
@@ -26,6 +28,8 @@ interface ActiveRun {
   maxEvents: number;
   eventWriteWarningShown: boolean;
   eventLimitWarningShown: boolean;
+  workspaceBaseline?: Map<string, string>;
+  workspaceExcludedDir: string;
 };
 
 interface LoadedConfig {
@@ -117,6 +121,53 @@ async function gitCommit(cwd: string): Promise<string | undefined> {
   }
 }
 
+function pathWithin(path: string, directory: string): boolean {
+  const normalizedPath = process.platform === "win32" ? path.toLowerCase() : path;
+  const normalizedDirectory = process.platform === "win32" ? directory.toLowerCase() : directory;
+  return normalizedPath === normalizedDirectory || normalizedPath.startsWith(`${normalizedDirectory}${sep}`);
+}
+
+async function fileFingerprint(path: string): Promise<string> {
+  try {
+    const info = await lstat(path);
+    const hash = createHash("sha256").update(`${info.mode}:`);
+    if (info.isSymbolicLink()) return hash.update(`symlink:${await readlink(path)}`).digest("hex");
+    if (!info.isFile()) return hash.update("non-file").digest("hex");
+    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    return hash.digest("hex");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+
+async function workspaceSnapshot(cwd: string, excludedDir: string): Promise<Map<string, string> | undefined> {
+  try {
+    const trackedPromise = execFileAsync("git", ["diff", "--name-only", "-z", "HEAD", "--"], { cwd, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+    const untrackedPromise = execFileAsync("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+    const [tracked, untracked] = await Promise.all([trackedPromise, untrackedPromise]);
+    const paths = new Set(`${tracked.stdout}${untracked.stdout}`.split("\0").filter(Boolean));
+    const snapshot = new Map<string, string>();
+    for (const relativePath of paths) {
+      const absolutePath = resolve(cwd, relativePath);
+      if (!pathWithin(absolutePath, resolve(cwd)) || pathWithin(absolutePath, excludedDir)) continue;
+      snapshot.set(relativePath, await fileFingerprint(absolutePath));
+    }
+    return snapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+function workspaceChanged(before: Map<string, string> | undefined, after: Map<string, string> | undefined): boolean | undefined {
+  if (!before || !after) return undefined;
+  if (before.size !== after.size) return true;
+  for (const [path, fingerprint] of before) {
+    if (after.get(path) !== fingerprint) return true;
+  }
+  return false;
+}
+
 async function loadConfig(cwd: string): Promise<LoadedConfig> {
   try {
     const raw = await readFile(join(cwd, ".pi", "run-review", "config.json"), "utf8");
@@ -205,12 +256,14 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     const baseDir = config.storageDir ? join(ctx.cwd, config.storageDir) : join(ctx.cwd, ".pi", "run-review");
     const runId = `run_${randomUUID()}`;
     const startedAt = now();
+    const [commit, baseline] = await Promise.all([gitCommit(ctx.cwd), workspaceSnapshot(ctx.cwd, resolve(baseDir))]);
     active = {
+      cwd: ctx.cwd,
       summary: {
         runId,
         sessionId: ctx.sessionManager.getSessionId(),
         model: modelName(ctx.model),
-        gitCommit: await gitCommit(ctx.cwd),
+        gitCommit: commit,
         startedAt,
         turnCount: 0,
         toolCount: 0,
@@ -226,6 +279,8 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       maxEvents: config.maxEventsPerRun ?? 10_000,
       eventWriteWarningShown: false,
       eventLimitWarningShown: false,
+      workspaceBaseline: baseline,
+      workspaceExcludedDir: resolve(baseDir),
     };
     await append(makeEvent("run_started", { model: active.summary.model, gitCommit: active.summary.gitCommit, captureMode: active.summary.captureMode }), (message) => ctx.ui.notify(message, "warning"));
   });
@@ -333,8 +388,13 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     }
   };
 
-  const finalizeRun = async (finished: ActiveRun, runEnded: ReviewEvent, ctx: ExtensionContext): Promise<void> => {
+  const finalizeRun = async (finished: ActiveRun, finalSnapshot: Promise<Map<string, string> | undefined>, ctx: ExtensionContext): Promise<void> => {
     try {
+      const changed = workspaceChanged(finished.workspaceBaseline, await finalSnapshot);
+      const runEnded = makeEvent("run_ended", {
+        durationMs: finished.summary.durationMs,
+        ...(changed === undefined ? {} : { workspaceChanged: changed, workspaceEvidence: "git-diff-snapshot" }),
+      }, { runId: finished.summary.runId, sessionId: finished.summary.sessionId });
       await appendToRun(finished, runEnded, true, (message) => ctx.ui.notify(message, "warning"));
       const invalidEventLines: number[] = [];
       const events = await readEvents(finished.eventsPath, { onInvalidLine: (issue) => invalidEventLines.push(issue.lineNumber) });
@@ -358,17 +418,14 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     }
   };
 
-  pi.on("agent_settled", (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => {
     if (!active) return;
     const finished = active;
     finished.summary.settledAt = now();
     finished.summary.durationMs = new Date(finished.summary.settledAt).getTime() - new Date(finished.summary.startedAt).getTime();
-    const runEnded = makeEvent("run_ended", { durationMs: finished.summary.durationMs }, {
-      runId: finished.summary.runId,
-      sessionId: finished.summary.sessionId,
-    });
+    const finalSnapshot = workspaceSnapshot(finished.cwd, finished.workspaceExcludedDir);
     active = undefined;
-    void finalizeRun(finished, runEnded, ctx);
+    await finalizeRun(finished, finalSnapshot, ctx);
   });
 
   pi.registerCommand("run-review", {

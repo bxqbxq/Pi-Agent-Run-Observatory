@@ -355,7 +355,6 @@ function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: n
         try {
           if ((JSON.parse(line) as { type?: string }).type === "agent_settled") {
             settled = true;
-            settleTimer ??= setTimeout(() => { void terminateProcessTree(child); }, 1_500);
           }
         } catch {
           // Pi's JSON mode may interleave non-JSON diagnostics; ignore those lines.
@@ -373,7 +372,7 @@ function runPiProcess(command: string, args: string[], cwd: string, timeoutMs: n
         .then((files) => {
           if (files.some((file) => file.endsWith(".json"))) {
             settled = true;
-            settleTimer ??= setTimeout(() => { void terminateProcessTree(child); }, 1_500);
+            settleTimer ??= setTimeout(() => { void terminateProcessTree(child); }, 250);
           }
         })
         .catch(() => undefined)

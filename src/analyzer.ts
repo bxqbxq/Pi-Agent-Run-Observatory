@@ -36,6 +36,34 @@ function normalizedArgs(args: unknown): string {
   return String(args);
 }
 
+function comparableArgs(payload: Partial<NormalizedToolPayload>): string | undefined {
+  if (payload.argsSummary?.hash) return payload.argsSummary.hash;
+  if (payload.args === undefined) return undefined;
+  return normalizedArgs(payload.args);
+}
+
+function toolCategory(toolName: unknown): string {
+  const name = String(toolName ?? "").toLowerCase();
+  if (/^(?:read|grep|find|ls|search|view|cat)$/.test(name)) return "inspect";
+  if (/^(?:write|edit|apply_patch|patch)$/.test(name)) return "change";
+  if (/^(?:bash|powershell|shell|exec|command)$/.test(name)) return "command";
+  return name;
+}
+
+function isDefiniteProgress(event: ReviewEvent, repeatedToolCallIds: Set<string>): boolean {
+  if (event.type === "verification") return verificationPassed(event);
+  if (event.type !== "tool_finished") return false;
+  if (event.toolCallId && repeatedToolCallIds.has(event.toolCallId)) return false;
+  const payload = payloadOf(event);
+  return payload.isError !== true && /^(?:write|edit|apply_patch|patch)$/i.test(String(payload.toolName ?? ""));
+}
+
+function isPossibleProgress(event: ReviewEvent, repeatedToolCallIds: Set<string>): boolean {
+  if (event.type !== "tool_finished") return false;
+  if (event.toolCallId && repeatedToolCallIds.has(event.toolCallId)) return false;
+  return payloadOf(event).isError !== true;
+}
+
 function verificationKey(event: ReviewEvent, config: AnalyzerConfig): string | undefined {
   if (event.type === "verification") {
     const command = (event.payload as unknown as VerificationPayload).command.replace(/\s+/g, " ").trim().toLowerCase();
@@ -71,9 +99,8 @@ function claimsCompletion(event: ReviewEvent): boolean {
   if (payload.role !== "assistant") return false;
   if (payload.contentSummary?.completionClaim !== undefined) return payload.contentSummary.completionClaim;
   const text = String(payload.summary ?? payload.text ?? "");
-  const reportsFailure = /未完成|没有完成|尚未完成|无法完成|不能完成|失败|未通过|没有通过|错误|阻塞|\b(?:failed|failure|error|blocked|incomplete|not\s+(?:done|complete|completed|finished|successful)|did not|could not)\b/i.test(text);
   const reportsCompletion = /任务(?:已经|已)?完成|测试(?:已经|已)?通过|验证(?:已经|已)?通过|\b(?:done|completed|finished|success(?:ful)?|tests?\s+passed)\b/i.test(text);
-  return reportsCompletion && !reportsFailure;
+  return reportsCompletion;
 }
 
 function aggregateRunUsage(events: ReviewEvent[], run: RunSummary): RunSummary {
@@ -151,43 +178,110 @@ function detectToolFailures(events: ReviewEvent[], config: AnalyzerConfig): Find
     const payload = payloadOf(event);
     if (!payload.isError) continue;
     const sourceIndex = events.indexOf(event);
-    const laterEvents = events.slice(sourceIndex + 1, sourceIndex + 1 + config.recoveryWindow);
-    const later = laterEvents.filter((candidate) => candidate.type === "tool_finished");
+    const remainingEvents = events.slice(sourceIndex + 1);
+    const later = remainingEvents
+      .filter((candidate) => candidate.type === "tool_finished" || candidate.type === "verification")
+      .slice(0, config.recoveryWindow);
+    const failedVerificationKey = verificationKey(event, config);
     const recovered = later.some((candidate) => {
+      if (failedVerificationKey) return verificationKey(candidate, config) === failedVerificationKey && verificationPassed(candidate);
+      if (candidate.type !== "tool_finished") return false;
       const candidatePayload = payloadOf(candidate);
       return candidatePayload.isError !== true && candidatePayload.toolName === payload.toolName;
     });
-    if (!recovered) {
-      results.push(finding("tool-failure-unrecovered", "high", "high", [event, ...laterEvents.slice(-1)], "工具调用失败后恢复窗口内没有成功操作", "修正参数、切换策略或明确向用户报告失败原因"));
+    if (recovered) continue;
+    const category = toolCategory(payload.toolName);
+    const possibleRecovery = category && later.find((candidate) => {
+      if (candidate.type === "verification") return failedVerificationKey !== undefined && verificationPassed(candidate);
+      const candidatePayload = payloadOf(candidate);
+      if (candidatePayload.isError === true) return false;
+      if (failedVerificationKey) return toolCategory(candidatePayload.toolName) === category;
+      return candidatePayload.toolName !== payload.toolName && toolCategory(candidatePayload.toolName) === category;
+    });
+    if (possibleRecovery) {
+      results.push(finding("tool-failure-unrecovered", "medium", "low", [event, possibleRecovery], "工具失败后出现同类别替代操作，但无法确认其是否消除了失败影响", "检查替代操作的结果是否覆盖原失败目标，并补充明确验证"));
+      continue;
     }
+    const boundary = later.at(-1)
+      ?? [...remainingEvents].reverse().find((candidate) => candidate.type === "agent_ended" || candidate.type === "run_ended" || claimsCompletion(candidate));
+    if (!boundary) {
+      results.push(finding("tool-failure-unrecovered", "medium", "low", [event], "检测到工具失败，但缺少后续完成操作或 run 结束证据，无法确认是否恢复", "检查后续事件是否完整，并确认失败影响是否已消除"));
+      continue;
+    }
+    results.push(finding("tool-failure-unrecovered", "high", "high", [event, boundary], "工具调用失败后恢复窗口内没有成功操作", "修正参数、切换策略或明确向用户报告失败原因"));
   }
   return results;
 }
 
 function detectDuplicateCalls(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
   const calls = events.filter((event) => event.type === "tool_started");
-  const results: Finding[] = [];
+  let strongest: Finding | undefined;
+  const confidenceRank: Record<Finding["confidence"], number> = { low: 1, medium: 2, high: 3 };
   for (let index = 0; index < calls.length; index += 1) {
     const current = calls[index];
     const currentPayload = payloadOf(current);
-    const key = `${currentPayload.toolName ?? ""}:${currentPayload.argsSummary?.hash ?? normalizedArgs(currentPayload.args)}`;
+    const currentArgs = comparableArgs(currentPayload);
+    if (!currentPayload.toolName || currentArgs === undefined) continue;
+    const key = `${currentPayload.toolName}:${currentArgs}`;
     const window = calls.slice(Math.max(0, index - config.duplicateWindow + 1), index + 1);
     const matches = window.filter((candidate) => {
       const payload = payloadOf(candidate);
-      return `${payload.toolName ?? ""}:${payload.argsSummary?.hash ?? normalizedArgs(payload.args)}` === key;
+      const args = comparableArgs(payload);
+      return args !== undefined && `${payload.toolName ?? ""}:${args}` === key;
     });
     if (matches.length >= config.duplicateThreshold) {
-      results.push(finding("ineffective-duplicate-call", "medium", matches.length >= config.duplicateThreshold + 1 ? "high" : "medium", matches, `相同工具调用在最近 ${config.duplicateWindow} 次调用中出现 ${matches.length} 次`, "检查参数、读取结果和当前状态，避免重复执行没有新信息的调用"));
-      break;
+      const currentEventIndex = events.indexOf(current);
+      const repeatedToolCallIds = new Set(matches.flatMap((match) => match.toolCallId ? [match.toolCallId] : []));
+      const firstEventIndex = events.indexOf(matches[0]);
+      const lastProgressIndex = events.slice(firstEventIndex + 1, currentEventIndex)
+        .reduce((latest, event, offset) => isDefiniteProgress(event, repeatedToolCallIds) ? firstEventIndex + 1 + offset : latest, -1);
+      const effectiveMatches = matches.filter((match) => events.indexOf(match) > lastProgressIndex);
+      if (effectiveMatches.length < config.duplicateThreshold) continue;
+      const effectiveFirstIndex = events.indexOf(effectiveMatches[0]);
+      const interval = events.slice(effectiveFirstIndex + 1, currentEventIndex);
+      const possibleProgress = interval.find((event) => isPossibleProgress(event, repeatedToolCallIds));
+      let consecutiveCount = 0;
+      for (let cursor = index; cursor >= 0; cursor -= 1) {
+        if (events.indexOf(calls[cursor]) <= lastProgressIndex) break;
+        const payload = payloadOf(calls[cursor]);
+        const args = comparableArgs(payload);
+        if (args === undefined || `${payload.toolName ?? ""}:${args}` !== key) break;
+        consecutiveCount += 1;
+      }
+      const candidate = finding(
+        "ineffective-duplicate-call",
+        "medium",
+        possibleProgress ? "low" : consecutiveCount >= config.duplicateThreshold + 1 ? "high" : "medium",
+        possibleProgress ? [...effectiveMatches, possibleProgress] : effectiveMatches,
+        possibleProgress
+          ? `相同工具调用在最近 ${config.duplicateWindow} 次调用中出现 ${effectiveMatches.length} 次，期间存在无法确认效果的成功操作`
+          : `相同工具调用在最近 ${config.duplicateWindow} 次调用中出现 ${effectiveMatches.length} 次`,
+        "检查参数、读取结果和当前状态，避免重复执行没有新信息的调用",
+      );
+      if (!strongest || confidenceRank[candidate.confidence] > confidenceRank[strongest.confidence]) strongest = candidate;
     }
   }
-  return results;
+  return strongest ? [strongest] : [];
 }
 
 function detectUnverifiedChanges(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {
   const changes = events.filter((event) => event.type === "tool_finished" && payloadOf(event).isError !== true && /^(write|edit|apply_patch|patch)$/i.test(String(payloadOf(event).toolName ?? "")));
-  if (!changes.length || events.some((event) => isVerification(event, config) && verificationPassed(event))) return [];
-  return [finding("change-without-verification", "high", "high", changes, "检测到文件改动，但 run 结束前没有成功验证命令", "运行任务声明的测试、构建、类型检查或 lint 命令")];
+  const workspaceEvent = [...events].reverse().find((event) => event.type === "run_ended" && typeof event.payload.workspaceChanged === "boolean");
+  if (workspaceEvent?.payload.workspaceChanged === false) return [];
+  const latestChangeIndex = changes.reduce((latest, event) => Math.max(latest, events.indexOf(event)), -1);
+  const verificationFloorIndex = latestChangeIndex >= 0
+    ? latestChangeIndex
+    : workspaceEvent
+      ? events.indexOf(workspaceEvent)
+      : -1;
+  const hasSuccessfulVerificationAfterChange = events.some((event, index) => index > verificationFloorIndex && isVerification(event, config) && verificationPassed(event));
+  if (hasSuccessfulVerificationAfterChange) return [];
+  if (workspaceEvent?.payload.workspaceChanged === true) {
+    const evidence = changes.length ? [changes.at(-1)!, workspaceEvent] : [workspaceEvent];
+    return [finding("change-without-verification", "high", "high", evidence, "Git 工作区指纹确认 run 期间发生真实改动，但改动后没有成功验证命令", "运行任务声明的测试、构建、类型检查或 lint 命令")];
+  }
+  if (!changes.length) return [];
+  return [finding("change-without-verification", "medium", "low", changes, "检测到写入类工具成功，但缺少 Git 工作区指纹，无法确认最终是否存在真实改动", "确认 Git diff 后运行任务声明的测试、构建、类型检查或 lint 命令")];
 }
 
 function detectIgnoredVerificationFailures(events: ReviewEvent[], config: AnalyzerConfig): Finding[] {

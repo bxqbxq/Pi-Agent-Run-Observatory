@@ -103,7 +103,7 @@ export function summarizeMessageContent(value: string): MessageContentSummary {
   return {
     charCount: value.length,
     lineCount: value ? value.split(/\r?\n/).length : 0,
-    completionClaim: reportsCompletion && !failureDisclosure,
+    completionClaim: reportsCompletion,
     failureDisclosure,
   };
 }

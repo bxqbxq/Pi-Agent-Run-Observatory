@@ -55,3 +55,9 @@ test("消息摘要不保留原文但保留完成声明信号", () => {
   assert.equal(summary.completionClaim, true);
   assert.equal(summarizeMessageContent("测试失败，任务尚未完成").failureDisclosure, true);
 });
+
+test("消息同时披露失败和声称完成时保留两个独立信号", () => {
+  const summary = summarizeMessageContent("测试失败，但任务完成，测试已通过。");
+  assert.equal(summary.failureDisclosure, true);
+  assert.equal(summary.completionClaim, true);
+});

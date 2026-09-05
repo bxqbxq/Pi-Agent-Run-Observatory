@@ -74,6 +74,8 @@ pi remove git:github.com/bxqbxq/Pi-Agent-Run-Observatory
 
 同一 run 的事件通过串行队列追加写入，并以 `toolCallId` 关联交错完成的工具调用。`agent_end` 只记录底层结束事件，最终报告在 `agent_settled` 后异步生成。单次运行默认最多采集 10000 条普通事件，可通过 `maxEventsPerRun` 调整；达到上限后保留最终 `run_ended`，并且每个 run 只警告一次。
 
+在 Git 工作区中，插件会在 run 开始和结束时比较已修改、已暂存及未跟踪文件的内容指纹，用于确认 run 期间是否存在净改动。持久化事件只记录是否变化和证据类型，不保存文件名、文件内容或源码 diff；非 Git 工作区无法取得指纹时，写入类工具事件只产生低置信度提示。
+
 ## 评测
 
 先复制示例配置并填入可用模型：
@@ -135,6 +137,6 @@ npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --task no
 ## 已知限制
 
 - 规则基于可观测事件推断，不能证明所有替代工具路径都已恢复失败。
-- 文件改动目前主要依据写入类工具事件，尚未逐次保存 Git diff 快照。
+- 工作区指纹只能确认 run 边界之间存在净改动，无法区分 Agent 改动与同一时段的外部并发改动，也不会记录逐次 Git diff。
 - Agent 结果具有随机性，模型比较应重复运行并报告样本量。
 - LLM explanation 只提供解释，不得覆盖规则结论。
