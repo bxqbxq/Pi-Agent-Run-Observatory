@@ -214,6 +214,9 @@ export function assessExperiment(plan: ExperimentPlan, summary: EvalSummaryDocum
   if (!baselineFailureCheck.passed) {
     return { schemaVersion: 1, experimentId: plan.id, taskId: plan.taskId, decision: "inconclusive", reason: "baseline 没有产生足够失败，任务缺少区分度", checks };
   }
+  if (resourceBasis === "per-success" && baseline.successRate === 0) {
+    return { schemaVersion: 1, experimentId: plan.id, taskId: plan.taskId, decision: "inconclusive", reason: "baseline 没有观测到成功，无法估算每次成功的资源消耗", checks };
+  }
   const evidenceCoverageChecks = [baselineAcceptanceSamples, candidateAcceptanceSamples, baselineCostSamples, candidateCostSamples];
   if ([...evidenceCoverageChecks, ...qualityAndBudgetChecks].every((check) => check.passed)) {
     return { schemaVersion: 1, experimentId: plan.id, taskId: plan.taskId, decision: "adopt", reason: "候选配置同时满足质量改善和资源预算", checks };

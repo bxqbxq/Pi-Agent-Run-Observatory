@@ -106,7 +106,7 @@ test("按每次成功计算时允许单次更贵但成功效率更高的候选",
   assert.equal(result.checks.find((check) => check.id === "cost-increase-rate")?.actual, -0.6);
 });
 
-test("baseline 从未成功时无法采用每次成功资源口径", () => {
+test("baseline 从未成功时每次成功资源口径判定为证据不足", () => {
   const perSuccessPlan: ExperimentPlan = {
     ...plan,
     criteria: { ...plan.criteria, resourceBasis: "per-success" },
@@ -115,7 +115,8 @@ test("baseline 从未成功时无法采用每次成功资源口径", () => {
     metric({ successRate: 0, failedRate: 1, acceptancePassRate: 0 }),
     metric({ successRate: 1, failedRate: 0, acceptancePassRate: 1 }),
   ));
-  assert.equal(result.decision, "reject");
+  assert.equal(result.decision, "inconclusive");
+  assert.match(result.reason, /无法估算/);
   assert.equal(result.checks.find((check) => check.id === "cost-increase-rate")?.actual, null);
 });
 
@@ -170,6 +171,7 @@ test("仓库中的预注册实验可从归档汇总重算结论", async () => {
     "bounded-mean": "inconclusive",
     "allocate-by-weight": "inconclusive",
     "allocate-extreme-weights": "reject",
+    "allocate-extreme-weights-efficiency": "inconclusive",
     "allocate-extreme-weights-lean": "reject",
   } as const;
   for (const [id, decision] of Object.entries(expected)) {
