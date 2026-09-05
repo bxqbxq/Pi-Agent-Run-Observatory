@@ -39,7 +39,17 @@ function now(): string {
 
 function textSummary(value: unknown, config: Config, cwd: string): string {
   const maxChars = config.captureFullContent ? undefined : config.summaryMaxChars ?? 1000;
-  return redactText(String(value ?? ""), { cwd, maxChars });
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(redactValue(value, { cwd })) ?? String(value ?? "");
+    } catch {
+      text = String(value ?? "");
+    }
+  }
+  return redactText(text, { cwd, maxChars });
 }
 
 function messageContentText(value: unknown): string {

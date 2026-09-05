@@ -76,7 +76,7 @@ npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/res
 用 `--task` 只运行一个任务，用 `--repeats` 对每个“配置 x 任务”组合重复采样。每条结果会记录从 1 开始的 `sampleIndex`，配置汇总中的 `runs` 是全部重复样本数：
 
 ```powershell
-npm run eval -- --configs eval/demo-configs.json --tasks eval/tasks --task add-validation --repeats 3 --output eval/results/demo-add-validation-3x2.json
+npm run eval -- --configs eval/configs.json --tasks eval/tasks --task add-validation --repeats 3 --output eval/results/add-validation-3x2.json
 ```
 
 使用 `--keep-failures` 时，runner 会在结果文件旁为每个失败运行导出证据包；也可用 `--failure-artifacts <path>` 指定目录。证据包包含 manifest、再次脱敏的事件、JSON/Markdown/HTML 报告、验证输出、配置快照和仅含文件名及增删行数的 diff 摘要。它不会保留完整临时工作区或源码 diff：
@@ -84,15 +84,6 @@ npm run eval -- --configs eval/demo-configs.json --tasks eval/tasks --task add-v
 ```powershell
 npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --task no-change --keep-failures --output eval/results/failure-smoke.json
 ```
-
-配置实验可在运行前用计划文件锁定样本数、质量提升和资源预算，并在运行后自动判定：
-
-```powershell
-npm run eval -- --configs eval/experiments/allocate-by-weight-configs.json --tasks eval/tasks --task allocate-by-weight --repeats 5 --keep-failures --output eval/results/allocate-by-weight-5x2.json
-npm run eval:assess -- --plan eval/experiments/allocate-by-weight-plan.json --result eval/results/allocate-by-weight-5x2.json --output eval/results/allocate-by-weight-5x2-assessment.json
-```
-
-仓库内两个预注册 5×2 实验均未证明 checklist 提示词能提高成功率，因此当前不采用候选配置。聚合结果和完整方法边界见 `eval/experiments/`。
 
 结果中的 `changedFiles` 记录 Agent 在隐藏夹具注入前产生的真实改动；`acceptance` 给出单次任务级验收及失败原因。汇总中的 `acceptancePassRate` 是配置在带验收任务上的语义通过率，较旧版仅依赖“任意改动 + 基线测试通过”的 `successRate` 更严格。
 
@@ -106,9 +97,9 @@ npm run eval:assess -- --plan eval/experiments/allocate-by-weight-plan.json --re
 
 ## 演示路径
 
-1. 用 `/run-diff baseline-deepseek checklist-deepseek --file eval/cases/add-validation-observed-recovery.json` 查看一次真实的“失败、定位、加入检查清单提示词、重跑成功”记录。失败证据是公开测试报出预期 `TypeError` 未抛出，runner 隐藏验收本身通过，因此不是基础设施故障。
-2. 再读取 `eval/cases/add-validation-replication-3x2.json`。随后三次重复实验中两种配置均为 3/3 成功，检查清单增加了耗时、工具、token 和成本；这个反证意味着单次恢复不能证明提示词普遍更优。
-3. 运行上面的 `--task add-validation --repeats 3` 命令生成新样本。两种配置固定相同模型、thinking、工具和任务，只改变 system prompt；只有重复样本持续显示改善时，才应采用候选配置。
+1. 用 `/run-review` 查看最近一次真实运行的诊断证据和报告路径。
+2. 用 `/run-review --explain` 检查解释是否引用证据且不改变规则结论。
+3. 用 `/run-diff baseline-deepseek checklist-deepseek --file eval/cases/add-validation-observed-recovery.json` 验证配置集合比较；该文件仅作为稳定功能示例，不用于宣称某种提示词更优。
 4. 用两个模型配置执行完整基准，比较成功率、unknown 比例、隐藏验收、finding 分布和 P95 耗时。
 
 ## 已知限制

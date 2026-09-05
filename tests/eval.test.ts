@@ -9,6 +9,7 @@ import { evaluateAcceptance, evaluateExpectation, loadTasks, parseRepeatCount, p
 import { appendEvent, writeReport } from "../src/storage.js";
 import { renderHtml, renderMarkdown } from "../src/render.js";
 import type { RunReport } from "../src/schema.js";
+import { stableFingerprint } from "../src/stable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -106,8 +107,17 @@ test("评测汇总按配置计算成功率", async () => {
       taskId: "b", configId: "baseline", status: "failed", durationMs: 300, piExitCode: 0, validations: [], acceptance: { passed: false, failures: ["x"] },
       report: { schemaVersion: 1, run: { runId: "run_b", startedAt: "2026-09-03T00:00:00.000Z", turnCount: 4, toolCount: 5, usage: { input: 30, output: 15, totalTokens: 45 }, cost: 0.03 }, outcome: { status: "failed", source: "rule", verification: "failed" }, findings: [] },
     },
-  ]);
+  ], {
+    tasks: [{ id: "a", prompt: "task", fixture: "fixture", validate: ["npm test"] }],
+    configs: [{ id: "baseline", model: "provider/model", thinking: "low" }],
+  });
   const summary = JSON.parse(await readFile(path, "utf8"));
+  assert.match(summary.inputFingerprints.tasks.a, /^sha256:[0-9a-f]{64}$/);
+  assert.match(summary.inputFingerprints.configs.baseline, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(
+    stableFingerprint({ id: "a", nested: { first: 1, second: 2 } }),
+    stableFingerprint({ nested: { second: 2, first: 1 }, id: "a" }),
+  );
   assert.equal(summary.byConfig.baseline.successRate, 0.5);
   assert.equal(summary.byConfig.baseline.expectationPassRate, 1);
   assert.equal(summary.byConfig.baseline.expectedRuns, 1);
@@ -218,69 +228,6 @@ test("十个隐藏验收器都接受满足公开要求的最小候选", async ()
     await execFileAsync(process.execPath, ["--test"], { cwd: workspace });
     await execFileAsync(process.execPath, [join(".eval", "acceptance", basename(validator))], { cwd: workspace });
   }
-});
-
-test("极端权重实验的隐藏验收拒绝朴素求和并接受数值稳定实现", async () => {
-  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-extreme-weights-"));
-  for (const entry of await (await import("node:fs/promises")).readdir(join(process.cwd(), "fixtures", "tiny-node"))) {
-    await cp(join(process.cwd(), "fixtures", "tiny-node", entry), join(workspace, entry), { recursive: true });
-  }
-  const acceptanceDir = join(workspace, ".eval", "acceptance");
-  await mkdir(acceptanceDir, { recursive: true });
-  await cp(
-    join(process.cwd(), "eval", "acceptance", "allocate-extreme-weights.mjs"),
-    join(acceptanceDir, "allocate-extreme-weights.mjs"),
-  );
-  const validator = join(".eval", "acceptance", "allocate-extreme-weights.mjs");
-  const implementation = (body: string) => `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\n${body}\n`;
-  await writeFile(join(workspace, "math.js"), implementation(`export function allocateByWeight(total, weights) { if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(weights) || weights.length === 0 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input"); const sum = weights.reduce((value, weight) => value + weight, 0); const exact = weights.map((weight) => total * weight / sum); const result = exact.map(Math.floor); let remaining = total - result.reduce((value, item) => value + item, 0); const order = exact.map((value, index) => ({ index, fraction: value - result[index] })).sort((left, right) => right.fraction - left.fraction || left.index - right.index); for (let index = 0; index < remaining; index += 1) result[order[index].index] += 1; return result; }`), "utf8");
-  await assert.rejects(execFileAsync(process.execPath, [validator], { cwd: workspace }));
-
-  await writeFile(join(workspace, "math.js"), implementation(`export function allocateByWeight(total, weights) { if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(weights) || weights.length === 0 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input"); const scale = Math.max(...weights); const normalized = weights.map((weight) => weight / scale); const sum = normalized.reduce((value, weight) => value + weight, 0); const exact = normalized.map((weight) => total * weight / sum); const result = exact.map(Math.floor); let remaining = total - result.reduce((value, item) => value + item, 0); const order = exact.map((value, index) => ({ index, fraction: value - result[index] })).sort((left, right) => right.fraction - left.fraction || left.index - right.index); for (let index = 0; index < remaining; index += 1) result[order[index].index] += 1; return result; }`), "utf8");
-  await execFileAsync(process.execPath, [validator], { cwd: workspace });
-});
-
-test("加权平均实验的隐藏验收拒绝朴素公式并接受双重缩放实现", async () => {
-  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-weighted-mean-"));
-  for (const entry of await (await import("node:fs/promises")).readdir(join(process.cwd(), "fixtures", "tiny-node"))) {
-    await cp(join(process.cwd(), "fixtures", "tiny-node", entry), join(workspace, entry), { recursive: true });
-  }
-  const acceptanceDir = join(workspace, ".eval", "acceptance");
-  await mkdir(acceptanceDir, { recursive: true });
-  await cp(
-    join(process.cwd(), "eval", "acceptance", "weighted-mean-stability.mjs"),
-    join(acceptanceDir, "weighted-mean-stability.mjs"),
-  );
-  const validator = join(".eval", "acceptance", "weighted-mean-stability.mjs");
-  const implementation = (body: string) => `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\n${body}\n`;
-  const validation = `if (!Array.isArray(values) || !Array.isArray(weights) || values.length === 0 || values.length !== weights.length || values.some((value) => !Number.isFinite(value)) || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input");`;
-  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const totalWeight = weights.reduce((sum, weight) => sum + weight, 0); return values.reduce((sum, value, index) => sum + value * weights[index], 0) / totalWeight; }`), "utf8");
-  await assert.rejects(execFileAsync(process.execPath, [validator], { cwd: workspace }));
-
-  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const weightScale = Math.max(...weights); const valueScale = Math.max(...values.map(Math.abs)); if (valueScale === 0) return 0; const normalizedWeights = weights.map((weight) => weight / weightScale); const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0); const normalizedMean = values.reduce((sum, value, index) => sum + (value / valueScale) * normalizedWeights[index], 0) / totalWeight; return normalizedMean * valueScale; }`), "utf8");
-  await execFileAsync(process.execPath, [validator], { cwd: workspace });
-});
-
-test("加权平均校准任务形成普通到宽权重的难度阶梯", async () => {
-  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-weighted-mean-calibration-"));
-  for (const entry of await (await import("node:fs/promises")).readdir(join(process.cwd(), "fixtures", "tiny-node"))) {
-    await cp(join(process.cwd(), "fixtures", "tiny-node", entry), join(workspace, entry), { recursive: true });
-  }
-  const acceptanceDir = join(workspace, ".eval", "acceptance");
-  await mkdir(acceptanceDir, { recursive: true });
-  for (const name of ["weighted-mean-basic.mjs", "weighted-mean-wide-weights.mjs"]) {
-    await cp(join(process.cwd(), "eval", "acceptance", name), join(acceptanceDir, name));
-  }
-  const implementation = (body: string) => `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\n${body}\n`;
-  const validation = `if (!Array.isArray(values) || !Array.isArray(weights) || values.length === 0 || values.length !== weights.length || values.some((value) => !Number.isFinite(value) || Math.abs(value) > 1000000) || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input");`;
-  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} if (weights.some((weight) => weight < 0.000001 || weight > 1000000)) throw new TypeError("weight out of range"); const totalWeight = weights.reduce((sum, weight) => sum + weight, 0); return values.reduce((sum, value, index) => sum + value * weights[index], 0) / totalWeight; }`), "utf8");
-  await execFileAsync(process.execPath, [join(".eval", "acceptance", "weighted-mean-basic.mjs")], { cwd: workspace });
-
-  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const totalWeight = weights.reduce((sum, weight) => sum + weight, 0); return values.reduce((sum, value, index) => sum + value * weights[index], 0) / totalWeight; }`), "utf8");
-  await assert.rejects(execFileAsync(process.execPath, [join(".eval", "acceptance", "weighted-mean-wide-weights.mjs")], { cwd: workspace }));
-
-  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const scale = Math.max(...weights); const normalized = weights.map((weight) => weight / scale); const totalWeight = normalized.reduce((sum, weight) => sum + weight, 0); return values.reduce((sum, value, index) => sum + value * normalized[index], 0) / totalWeight; }`), "utf8");
-  await execFileAsync(process.execPath, [join(".eval", "acceptance", "weighted-mean-wide-weights.mjs")], { cwd: workspace });
 });
 
 test("外部验证结果回写报告并消除未验证误报", async () => {

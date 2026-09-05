@@ -6,7 +6,7 @@
     "taskId": "add-validation",
     "model": "deepseek/deepseek-v4-flash",
     "thinking": "low",
-    "controlledDifference": "Only the candidate adds the checklist system prompt from eval/demo-configs.json.",
+    "controlledDifference": "This historical candidate used an additional completion checklist system prompt.",
     "baselineEvidence": {
       "status": "failed",
       "verification": "failed",

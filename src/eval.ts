@@ -4,11 +4,11 @@ import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { analyzeRun } from "./analyzer.js";
-import { experimentFingerprint } from "./experiment.js";
 import type { RunReport } from "./schema.js";
 import type { ReviewEvent } from "./schema.js";
 import { renderHtml, renderMarkdown } from "./render.js";
 import { redactText, redactValue } from "./redaction.js";
+import { stableFingerprint } from "./stable.js";
 import { appendEvent, readEvents, readReport, writeReport } from "./storage.js";
 
 function childEnvironment(): NodeJS.ProcessEnv {
@@ -567,8 +567,8 @@ export async function writeEvalSummary(path: string, results: EvalResult[], inpu
     ...(taskIds.length === 1 ? { taskId: taskIds[0] } : {}),
     ...(inputs ? {
       inputFingerprints: {
-        tasks: Object.fromEntries(inputs.tasks.map((task) => [task.id, experimentFingerprint(task)])),
-        configs: Object.fromEntries(inputs.configs.map((config) => [config.id, experimentFingerprint(config)])),
+        tasks: Object.fromEntries(inputs.tasks.map((task) => [task.id, stableFingerprint(task)])),
+        configs: Object.fromEntries(inputs.configs.map((config) => [config.id, stableFingerprint(config)])),
       },
     } : {}),
     byConfig,

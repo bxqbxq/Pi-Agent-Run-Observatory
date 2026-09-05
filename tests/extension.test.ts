@@ -76,7 +76,7 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   await invoke("agent_start", {}, ctx);
   const privateArgs = { command: "npm test -- --token=super-secret-value", path: "C:\\Users\\alice\\private.ts" };
   await invoke("tool_execution_start", { toolCallId: "call_1", toolName: "bash", args: privateArgs }, ctx);
-  await invoke("tool_execution_end", { toolCallId: "call_1", toolName: "bash", isError: false, result: { exitCode: 0 } }, ctx);
+  await invoke("tool_execution_end", { toolCallId: "call_1", toolName: "bash", isError: true, result: { exitCode: 1, error: { code: "ENOENT", message: "command unavailable" } } }, ctx);
   await invoke("message_end", { message: { role: "user", content: "private user prompt alpha-42" } }, ctx);
   await invoke("message_end", { message: { role: "assistant", content: "任务已经完成，测试已通过。private answer beta-43" } }, ctx);
   await invoke("before_provider_request", { payload: { messages: [{ content: "provider secret gamma-44" }] } }, ctx);
@@ -95,6 +95,10 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   assert.equal(toolPayload.args, undefined);
   assert.match(String(toolPayload.argsSummary?.hash), /^sha256:[a-f0-9]{64}$/);
   assert.equal(toolPayload.verificationKey, "verification:0");
+  const toolFinished = events.find((event) => event.type === "tool_finished");
+  const toolFinishedPayload = toolFinished?.payload as { resultSummary?: string };
+  assert.match(String(toolFinishedPayload.resultSummary), /ENOENT/);
+  assert.doesNotMatch(String(toolFinishedPayload.resultSummary), /\[object Object\]/);
   const providerRequest = events.find((event) => event.type === "provider_request");
   const providerPayload = providerRequest?.payload as { payload?: unknown; payloadSummary?: ValueSummary };
   assert.equal(providerPayload.payload, undefined);
