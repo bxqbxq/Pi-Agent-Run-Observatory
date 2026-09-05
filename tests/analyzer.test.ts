@@ -88,6 +88,20 @@ test("旧事件的 totalTokens 被脱敏时从 token 分项恢复", () => {
   assert.equal(report.run.usage?.totalTokens, 19);
 });
 
+test("没有助手 usage 时从 provider usage 摘要汇总 token", () => {
+  const report = analyzeRun([
+    event("provider_response", "e1", { status: 200, usageSummary: { metrics: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 } } }),
+  ], run);
+  assert.deepEqual(report.run.usage, {
+    input: 12,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    totalTokens: 17,
+  });
+});
+
 test("自定义验证命令参与成功判定", () => {
   const report = analyzeRun([
     event("tool_finished", "e1", { toolName: "bash", args: "npm run check:api", isError: false, exitCode: 0 }),

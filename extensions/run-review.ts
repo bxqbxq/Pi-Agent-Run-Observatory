@@ -23,6 +23,7 @@ interface ActiveRun {
   reportDir: string;
   toolStarts: Map<string, number>;
   toolArgs: Map<string, unknown>;
+  providerRequestStarts: number[];
   eventWriteQueue: Promise<void>;
   eventCount: number;
   maxEvents: number;
@@ -119,6 +120,37 @@ async function gitCommit(cwd: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function gitRoot(cwd: string): Promise<string | undefined> {
+  try {
+    const result = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd, windowsHide: true });
+    return result.stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function projectIdentifier(projectRoot: string): string {
+  const normalizedPath = resolve(projectRoot).replaceAll("\\", "/").replace(/\/$/, "");
+  const normalized = process.platform === "win32" ? normalizedPath.toLowerCase() : normalizedPath;
+  return `sha256:${createHash("sha256").update(normalized, "utf8").digest("hex")}`;
+}
+
+function numericUsageMetrics(value: unknown, prefix = "", output: Record<string, number> = {}): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return output;
+  for (const [key, item] of Object.entries(value)) {
+    const name = prefix ? `${prefix}.${key}` : key;
+    if (typeof item === "number" && Number.isFinite(item)) output[name] = item;
+    else if (item && typeof item === "object" && !Array.isArray(item)) numericUsageMetrics(item, name, output);
+  }
+  return output;
+}
+
+function providerUsageSummary(value: unknown, cwd: string): unknown {
+  const summary = summarizeValue(value, { cwd });
+  const metrics = numericUsageMetrics(value);
+  return { ...summary, ...(Object.keys(metrics).length ? { metrics } : {}) };
 }
 
 function pathWithin(path: string, directory: string): boolean {
@@ -256,7 +288,8 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     const baseDir = config.storageDir ? join(ctx.cwd, config.storageDir) : join(ctx.cwd, ".pi", "run-review");
     const runId = `run_${randomUUID()}`;
     const startedAt = now();
-    const [commit, baseline] = await Promise.all([gitCommit(ctx.cwd), workspaceSnapshot(ctx.cwd, resolve(baseDir))]);
+    const [commit, root, baseline] = await Promise.all([gitCommit(ctx.cwd), gitRoot(ctx.cwd), workspaceSnapshot(ctx.cwd, resolve(baseDir))]);
+    const projectId = projectIdentifier(root ?? ctx.cwd);
     active = {
       cwd: ctx.cwd,
       summary: {
@@ -264,6 +297,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
         sessionId: ctx.sessionManager.getSessionId(),
         model: modelName(ctx.model),
         gitCommit: commit,
+        projectId,
         startedAt,
         turnCount: 0,
         toolCount: 0,
@@ -274,6 +308,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       reportDir: join(baseDir, "reports"),
       toolStarts: new Map(),
       toolArgs: new Map(),
+      providerRequestStarts: [],
       eventWriteQueue: Promise.resolve(),
       eventCount: 0,
       maxEvents: config.maxEventsPerRun ?? 10_000,
@@ -282,7 +317,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       workspaceBaseline: baseline,
       workspaceExcludedDir: resolve(baseDir),
     };
-    await append(makeEvent("run_started", { model: active.summary.model, gitCommit: active.summary.gitCommit, captureMode: active.summary.captureMode }), (message) => ctx.ui.notify(message, "warning"));
+    await append(makeEvent("run_started", { model: active.summary.model, gitCommit: active.summary.gitCommit, projectId: active.summary.projectId, captureMode: active.summary.captureMode }), (message) => ctx.ui.notify(message, "warning"));
   });
 
   pi.on("turn_start", async (event, ctx) => {
@@ -362,15 +397,26 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("before_provider_request", async (event, ctx) => {
+    active?.providerRequestStarts.push(Date.now());
     await append(makeEvent("provider_request", config.captureFullContent
       ? { payload: capturedValue(event.payload, config, ctx.cwd) }
       : { payloadSummary: capturedValue(event.payload, config, ctx.cwd) }), (message) => ctx.ui.notify(message, "warning"));
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
-    await append(makeEvent("provider_response", {
+    const response = event as typeof event & { durationMs?: unknown; usage?: unknown };
+    const started = active?.providerRequestStarts.shift();
+    const durationMs = typeof response.durationMs === "number" && Number.isFinite(response.durationMs) && response.durationMs >= 0
+      ? response.durationMs
+      : started === undefined ? undefined : Date.now() - started;
+    const payload: Record<string, unknown> = {
       status: event.status,
+      ...(durationMs === undefined ? {} : { durationMs }),
+      ...(response.usage === undefined ? {} : { usageSummary: providerUsageSummary(response.usage, ctx.cwd) }),
       ...(config.captureFullContent ? { headers: capturedValue(event.headers, config, ctx.cwd) } : { headerSummary: capturedValue(event.headers, config, ctx.cwd) }),
+    };
+    await append(makeEvent("provider_response", {
+      ...payload,
     }), (message) => ctx.ui.notify(message, "warning"));
   });
 

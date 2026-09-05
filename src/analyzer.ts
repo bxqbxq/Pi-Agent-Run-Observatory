@@ -131,6 +131,43 @@ function aggregateRunUsage(events: ReviewEvent[], run: RunSummary): RunSummary {
       }
     }
   }
+  if (!hasUsage) {
+    for (const event of events) {
+      if (event.type !== "provider_response") continue;
+      const summary = event.payload.usageSummary;
+      if (!summary || typeof summary !== "object" || Array.isArray(summary)) continue;
+      const metrics = (summary as Record<string, unknown>).metrics;
+      if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) continue;
+      const values = metrics as Record<string, unknown>;
+      const readMetric = (names: string[]): number | undefined => {
+        for (const name of names) {
+          const value = values[name];
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+        }
+        return undefined;
+      };
+      const measured = {
+        input: readMetric(["input", "inputTokens", "promptTokens", "prompt_tokens"]),
+        output: readMetric(["output", "outputTokens", "completionTokens", "completion_tokens"]),
+        cacheRead: readMetric(["cacheRead", "cache_read", "cachedTokens", "cached_tokens"]),
+        cacheWrite: readMetric(["cacheWrite", "cache_write"]),
+        reasoning: readMetric(["reasoning", "reasoningTokens", "reasoning_tokens"]),
+        totalTokens: readMetric(["totalTokens", "total_tokens"]),
+      };
+      for (const [key, value] of Object.entries(measured)) {
+        if (value !== undefined) {
+          usage[key as keyof typeof usage] += value;
+          observedUsage.add(key);
+          hasUsage = true;
+        }
+      }
+      const providerCost = readMetric(["cost", "totalCost", "total_cost"]);
+      if (providerCost !== undefined) {
+        cost += providerCost;
+        hasCost = true;
+      }
+    }
+  }
   if (hasUsage && !observedUsage.has("totalTokens")) {
     usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
   }

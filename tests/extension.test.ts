@@ -100,13 +100,16 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   await invoke("message_end", { message: { role: "user", content: "private user prompt alpha-42" } }, ctx);
   await invoke("message_end", { message: { role: "assistant", content: "任务已经完成，测试已通过。private answer beta-43" } }, ctx);
   await invoke("before_provider_request", { payload: { messages: [{ content: "provider secret gamma-44" }] } }, ctx);
+  await invoke("after_provider_response", { status: 200, headers: { "x-request-id": "provider-secret-header" }, usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, secret: "provider-secret-delta" } }, ctx);
+  await invoke("before_provider_request", { payload: { messages: [] } }, ctx);
+  await invoke("after_provider_response", { status: 204, headers: {} }, ctx);
   await invoke("agent_settled", {}, ctx);
   await waitFor(() => notifications.some((message) => message.includes("报告生成已排队")), "settled 后未异步生成摘要");
   assert.equal(notifications.some((message) => message.includes("主要问题：tool-failure-unrecovered")), true);
 
   const eventsPath = join(cwd, ".pi", "run-review", "events.jsonl");
   const rawEvents = await readFile(eventsPath, "utf8");
-  for (const privateText of ["super-secret-value", "C:\\Users\\alice", "alpha-42", "beta-43", "gamma-44", "npm test"]) {
+  for (const privateText of ["super-secret-value", "C:\\Users\\alice", "alpha-42", "beta-43", "gamma-44", "npm test", "provider-secret-header", "provider-secret-delta"]) {
     assert.equal(rawEvents.includes(privateText), false, `event log leaked: ${privateText}`);
   }
 
@@ -124,6 +127,14 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   const providerPayload = providerRequest?.payload as { payload?: unknown; payloadSummary?: ValueSummary };
   assert.equal(providerPayload.payload, undefined);
   assert.match(String(providerPayload.payloadSummary?.hash), /^sha256:[a-f0-9]{64}$/);
+  const providerResponse = events.find((event) => event.type === "provider_response");
+  const providerResponsePayload = providerResponse?.payload as { durationMs?: unknown; usageSummary?: { metrics?: Record<string, unknown>; structure?: unknown } };
+  assert.equal(typeof providerResponsePayload.durationMs, "number");
+  assert.equal(providerResponsePayload.usageSummary?.metrics?.prompt_tokens, 10);
+  assert.equal(providerResponsePayload.usageSummary?.metrics?.secret, undefined);
+  const providerResponses = events.filter((event) => event.type === "provider_response");
+  assert.equal(providerResponses.length, 2);
+  assert.equal((providerResponses[1]?.payload as { usageSummary?: unknown }).usageSummary, undefined);
   const assistantMessage = events.find((event) => event.type === "message" && event.payload.role === "assistant");
   const messagePayload = assistantMessage?.payload as { content?: unknown; contentSummary?: MessageContentSummary };
   assert.equal(messagePayload.content, undefined);
@@ -135,6 +146,7 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   assert.ok(reportFile);
   const report = JSON.parse(await readFile(join(reportsDir, reportFile), "utf8")) as RunReport;
   assert.equal(report.run.captureMode, "redacted");
+  assert.match(report.run.projectId ?? "", /^sha256:[a-f0-9]{64}$/);
 });
 
 test("损坏配置回退安全默认值且不阻断 run", async () => {

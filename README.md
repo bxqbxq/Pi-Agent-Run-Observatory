@@ -62,11 +62,11 @@ pi remove git:github.com/bxqbxq/Pi-Agent-Run-Observatory
 
 `--explain` 使用当前模型对规则证据做按需解释；解释不会覆盖规则结论，也不会计入主 Agent 的统计。`--full` 只有在运行开始前已设置 `captureFullContent: true` 时才显示 finding 引用的完整采集事件详情，不能事后恢复默认模式未保存的内容。
 
-`/run-diff` 传入两个 `runId` 时比较单次运行；传入两个配置 ID 时比较评测集合中的成功率、失败率、unknown、隐藏验收、finding、平均/P95 耗时、turn、工具、token 和成本。配置比较可用 `--file` 指定评测汇总；省略时会从 `eval/results/` 中选择最新且同时包含两个配置的有效汇总。旧报告没有采集到 token 或成本时，相应值显示为 `null`，不会按 0 处理。
+`/run-diff` 传入两个 `runId` 时比较单次运行；传入两个配置 ID 时比较评测集合中的成功率、失败率、unknown、隐藏验收、finding、平均/P95 耗时、turn、工具、token 和成本。配置比较可用 `--file` 指定评测汇总；省略时会从 `eval/results/` 中选择最新且同时包含两个配置的有效汇总。旧报告没有采集到 token 或成本时，相应值显示为 `null`，不会按 0 处理。provider 响应在可用时记录状态、request/response 配对耗时和仅含数值指标的 usage 摘要；当前 Pi 版本未提供响应 usage 时保持缺失，不伪造数据。
 
 ## 隐私模式
 
-默认 `captureFullContent` 为 `false`。事件日志不会保存用户 Prompt、助手回复、工具参数或 provider payload 原文：消息只记录长度和完成/失败信号，参数只记录字段结构和经过脱敏后计算的 SHA-256 指纹。指纹用于判断重复调用，只表示两个参数是否相同，不是对原文的加密存储。工具结果和错误仍会经过凭据、项目路径、外部绝对路径替换及长度截断后保存。
+默认 `captureFullContent` 为 `false`。事件日志不会保存用户 Prompt、助手回复、工具参数或 provider payload 原文：消息只记录长度和完成/失败信号，参数只记录字段结构和经过脱敏后计算的 SHA-256 指纹。指纹用于判断重复调用，只表示两个参数是否相同，不是对原文的加密存储。工具结果和错误仍会经过凭据、项目路径、外部绝对路径替换及长度截断后保存。每个 run 还记录由规范化项目根目录生成的 `projectId`（`sha256:<64位十六进制>`），用于跨 run 关联，不保存项目路径本身。
 
 只有在 `.pi/run-review/config.json` 中显式设置 `"captureFullContent": true` 时，才会保存经过凭据和路径脱敏的完整内容。JSON、Markdown 和 HTML 报告都会以 `captureMode: full` 或“采集模式：full”标记该模式。修改配置不会清理此前生成的事件和报告，需要由用户按本地数据保留策略自行处理旧文件。
 

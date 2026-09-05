@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { compareEvalConfigs, findLatestEvalSummary, parseEvalSummary, readEvalSummary } from "../src/diff.js";
+import { parseFailureCase, readFailureCase } from "../src/cases.js";
 
 function config(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -97,6 +98,23 @@ test("仓库内的演示案例符合评测汇总 schema", async () => {
     assert.equal(summary.byConfig["baseline-deepseek"]?.runs > 0, true);
     assert.equal(summary.byConfig["checklist-deepseek"]?.runs > 0, true);
   }
+});
+
+test("脱敏真实失败案例包含可回溯事件链、人工标注和有效报告", async () => {
+  const failureCase = await readFailureCase(join(process.cwd(), "eval", "cases", "tool-failure-unrecovered-trace.json"));
+  assert.equal(failureCase.case.source, "real-pi-run-redacted");
+  assert.equal(failureCase.annotation.reviewer, "human");
+  assert.equal(failureCase.annotation.expectedFinding.ruleId, "tool-failure-unrecovered");
+  assert.equal(failureCase.events.some((event) => event.type === "run_ended"), true);
+  assert.equal(failureCase.report.findings.some((finding) => finding.ruleId === failureCase.annotation.expectedFinding.ruleId), true);
+});
+
+test("脱敏真实失败案例拒绝未引用事件的人工证据", async () => {
+  const failureCase = JSON.parse(await readFile(join(process.cwd(), "eval", "cases", "tool-failure-unrecovered-trace.json"), "utf8")) as Record<string, unknown>;
+  const annotation = failureCase.annotation as Record<string, unknown>;
+  const expectedFinding = annotation.expectedFinding as Record<string, unknown>;
+  expectedFinding.evidence = ["missing-event"];
+  assert.throws(() => parseFailureCase(failureCase), /eventId/);
 });
 
 test("固定演示配置可重跑案例且只改变候选 system prompt", async () => {

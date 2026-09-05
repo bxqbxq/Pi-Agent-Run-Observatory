@@ -46,6 +46,8 @@ export interface RunSummary {
   sessionId?: string;
   model?: string;
   gitCommit?: string;
+  /** One-way identifier derived from the normalized project root; never the path itself. */
+  projectId?: string;
   startedAt: string;
   settledAt?: string;
   durationMs?: number;
@@ -141,6 +143,13 @@ function optionalString(value: unknown, path: string): string | undefined {
   return stringField(value, path);
 }
 
+function optionalProjectId(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  const result = stringField(value, path);
+  if (!/^sha256:[a-f0-9]{64}$/.test(result)) throw new SchemaValidationError(`${path} 必须是 sha256 标识`);
+  return result;
+}
+
 function nonNegativeNumber(value: unknown, path: string, integer = false): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
     throw new SchemaValidationError(`${path} 必须是非负${integer ? "整数" : "数字"}`);
@@ -184,6 +193,7 @@ function parseRunSummary(value: unknown): RunSummary {
     sessionId: optionalString(input.sessionId, "report.run.sessionId"),
     model: optionalString(input.model, "report.run.model"),
     gitCommit: optionalString(input.gitCommit, "report.run.gitCommit"),
+    projectId: optionalProjectId(input.projectId, "report.run.projectId"),
     startedAt: timestamp(input.startedAt, "report.run.startedAt"),
     settledAt: input.settledAt === undefined ? undefined : timestamp(input.settledAt, "report.run.settledAt"),
     durationMs: input.durationMs === undefined ? undefined : nonNegativeNumber(input.durationMs, "report.run.durationMs"),

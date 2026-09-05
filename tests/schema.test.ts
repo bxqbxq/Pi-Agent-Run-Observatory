@@ -31,6 +31,8 @@ test("事件和报告运行时 schema 接受有效数据并拒绝错误版本", 
   assert.throws(() => parseRunReport({ ...validReport, outcome: { ...validReport.outcome, status: "done" } }), /status/);
   assert.throws(() => parseRunReport({ ...validReport, run: { ...validReport.run, toolCount: -1 } }), /toolCount/);
   assert.throws(() => parseRunReport({ ...validReport, findings: [{ findingId: "f1", ruleId: "rule", severity: "high", confidence: "high", evidence: [], trigger: "x", recommendation: "y" }] }), /evidence/);
+  assert.equal(parseRunReport({ ...validReport, run: { ...validReport.run, projectId: `sha256:${"a".repeat(64)}` } }).run.projectId, `sha256:${"a".repeat(64)}`);
+  assert.throws(() => parseRunReport({ ...validReport, run: { ...validReport.run, projectId: "C:\\Users\\alice\\project" } }), /projectId/);
 });
 
 test("配置 schema 对无效类型整份拒绝", () => {

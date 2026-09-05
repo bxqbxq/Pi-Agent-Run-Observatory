@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-05T06:50:00.000Z",
+  "case": {
+    "id": "tool-failure-unrecovered-trace",
+    "kind": "real-pi-failure",
+    "source": "real-pi-run-redacted",
+    "taskId": "allocate-extreme-weights",
+    "model": "deepseek/deepseek-v4-flash",
+    "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7"
+  },
+  "events": [
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_e7f3502d-1d9a-4919-95c8-8e931a8e2252",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:42:26.947Z",
+      "type": "run_started",
+      "payload": {
+        "model": "deepseek/deepseek-v4-flash",
+        "gitCommit": "ff63fd35e8c7776a2e815db957f5a8e928692a87",
+        "captureMode": "redacted"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_af2333fc-69f6-45d2-beb4-760ea2859fd6",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:42:44.510Z",
+      "type": "tool_finished",
+      "toolCallId": "call_00_lbVo0hioP5KCYPzup9OY9232",
+      "payload": {
+        "toolName": "edit",
+        "argsSummary": {
+          "structure": {
+            "type": "object",
+            "fields": {
+              "edits": "array"
+            }
+          },
+          "hash": "sha256:d0ec68fba520041448433585bd27f0f315db875bdc74b7f24285b7a897e33eb4"
+        },
+        "isError": true,
+        "durationMs": 1,
+        "resultSummary": "[object Object]"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_3613ad60-2419-430a-8011-804ab0167b29",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:42:44.623Z",
+      "type": "provider_response",
+      "payload": {
+        "status": 200,
+        "headerSummary": {
+          "structure": {
+            "type": "object",
+            "fields": {
+              "content-type": "string",
+              "x-request-id": "string"
+            }
+          },
+          "hash": "sha256:bd9b1d2bc0abfae308160c315e93a38b4066b1d5b8a21d0499505a05591e397e"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_c207e4d3-fe44-4ccb-b247-69d6f2d2e44c",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:43:05.434Z",
+      "type": "agent_ended",
+      "payload": {
+        "messageCount": 27
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_1814e898-ce2f-45a1-811b-8e333c21a49b",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:43:05.435Z",
+      "type": "run_ended",
+      "payload": {
+        "durationMs": 38549
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_eval_verification_0_24ce0e8a-add0-49d8-a608-b2631afa0043",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:43:06.130Z",
+      "type": "verification",
+      "payload": {
+        "command": "npm test",
+        "exitCode": 0,
+        "passed": true,
+        "source": "declared"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "evt_eval_verification_1_a10a3608-8264-4dc8-b56a-7373a308a6ff",
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "timestamp": "2026-09-05T06:43:06.130Z",
+      "type": "verification",
+      "payload": {
+        "command": "node .eval/acceptance/allocate-extreme-weights.mjs",
+        "exitCode": 1,
+        "passed": false,
+        "source": "declared"
+      }
+    }
+  ],
+  "report": {
+    "schemaVersion": 1,
+    "run": {
+      "runId": "run_e2c72a42-8a45-4372-b49a-12117e61fcd7",
+      "sessionId": "01a0704d-df24-72e0-bfee-623e1feeee65",
+      "model": "deepseek/deepseek-v4-flash",
+      "gitCommit": "ff63fd35e8c7776a2e815db957f5a8e928692a87",
+      "startedAt": "2026-09-05T06:42:26.886Z",
+      "settledAt": "2026-09-05T06:43:05.435Z",
+      "durationMs": 38549,
+      "turnCount": 13,
+      "toolCount": 13,
+      "captureMode": "redacted",
+      "usage": {
+        "input": 4796,
+        "output": 5663,
+        "cacheRead": 57856,
+        "cacheWrite": 0,
+        "reasoning": 2041,
+        "totalTokens": 68315
+      },
+      "cost": 0.0024190768
+    },
+    "outcome": {
+      "status": "failed",
+      "source": "rule",
+      "verification": "failed"
+    },
+    "findings": [
+      {
+        "findingId": "tool-failure-unrecovered:evt_af2333fc-69f6-45d2-beb4-760ea2859fd6,evt_3613ad60-2419-430a-8011-804ab0167b29",
+        "ruleId": "tool-failure-unrecovered",
+        "severity": "high",
+        "confidence": "high",
+        "evidence": [
+          "evt_af2333fc-69f6-45d2-beb4-760ea2859fd6",
+          "evt_3613ad60-2419-430a-8011-804ab0167b29"
+        ],
+        "trigger": "工具调用失败后恢复窗口内没有成功操作",
+        "recommendation": "修正参数、切换策略或明确向用户报告失败原因"
+      }
+    ]
+  },
+  "annotation": {
+    "reviewer": "human",
+    "expectedFinding": {
+      "ruleId": "tool-failure-unrecovered",
+      "evidence": [
+        "evt_af2333fc-69f6-45d2-beb4-760ea2859fd6",
+        "evt_c207e4d3-fe44-4ccb-b247-69d6f2d2e44c",
+        "evt_1814e898-ce2f-45a1-811b-8e333c21a49b"
+      ],
+      "rationale": "真实 Pi 运行中的 edit 工具失败，后续事件没有显示成功的替代修改或修复动作，Agent 随后结束运行。"
+    }
+  },
+  "redaction": {
+    "mode": "redacted",
+    "omitted": [
+      "原始用户 prompt",
+      "原始模型输出和推理",
+      "完整工具参数",
+      "工具结果和文件内容",
+      "项目绝对路径",
+      "API key、token 和其他凭据"
+    ],
+    "limitation": "这是一次真实 Pi 运行的脱敏相关事件链，不代表该模型或任务的总体表现；provider usage 在原始 Pi 事件不可用，因此本案例不补造该字段。"
+  }
+}
