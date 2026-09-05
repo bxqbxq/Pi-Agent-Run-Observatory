@@ -75,6 +75,27 @@ function capturedValue(value: unknown, config: Config, cwd: string): unknown {
     : summarizeValue(value, { cwd });
 }
 
+function explanationText(report: ReturnType<typeof analyzeRun>, text: string): string {
+  const evidence = [...new Set(report.findings.flatMap((finding) => finding.evidence))];
+  const recommendations = [...new Set(report.findings.map((finding) => finding.recommendation))];
+  return [
+    "根因解释：",
+    text || "模型未返回根因解释。",
+    "",
+    `证据引用：${evidence.length ? evidence.join(", ") : "无可引用的 finding 证据"}`,
+    "",
+    "可执行建议：",
+    ...(recommendations.length ? recommendations.map((item) => `- ${item}`) : ["- 当前没有规则建议，请结合脱敏事件人工检查。"]),
+    "",
+    "不确定性说明：以上解释仅基于插件采集到的脱敏事件和确定性规则，可能缺少未被观测的上下文。",
+  ].join("\n");
+}
+
+function evidenceEvents(report: ReturnType<typeof analyzeRun>, events: ReviewEvent[]): ReviewEvent[] {
+  const evidenceIds = new Set(report.findings.flatMap((finding) => finding.evidence));
+  return events.filter((event) => event.runId === report.run.runId && evidenceIds.has(event.eventId));
+}
+
 function verificationHint(toolName: string, value: unknown, commands: string[] | undefined): string | undefined {
   if (!/^(?:bash|powershell|shell|exec|command)$/i.test(toolName)) return undefined;
   let text: string;
@@ -328,7 +349,8 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       });
       const jsonPath = join(finished.reportDir, `${finished.summary.runId}.json`);
       if (finished.config.autoSummary !== false) {
-        ctx.ui.notify(`${report.outcome.status}：${report.findings.length} 个问题，报告生成已排队：${jsonPath}`, report.outcome.status === "failed" ? "warning" : "info");
+        const primaryIssue = report.findings[0]?.ruleId ?? "无";
+        ctx.ui.notify(`${report.outcome.status}：${report.findings.length} 个问题；主要问题：${primaryIssue}；报告生成已排队：${jsonPath}`, report.outcome.status === "failed" ? "warning" : "info");
       }
       await writeRunReports(finished, report, jsonPath, ctx);
     } catch (error) {
@@ -357,6 +379,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       const requestedRun = tokens.indexOf("--run") >= 0 ? tokens[tokens.indexOf("--run") + 1] : undefined;
       const formatIndex = tokens.indexOf("--format");
       const format = formatIndex >= 0 ? tokens[formatIndex + 1] : "markdown";
+      const full = tokens.includes("--full");
       const reportPath = requestedRun && lastReportPath ? join(dirname(lastReportPath), `${requestedRun}.json`) : lastReportPath;
       if (!reportPath) {
         ctx.ui.notify("当前还没有可评审的 settled run。", "warning");
@@ -373,10 +396,10 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
             const events = await readEvents(eventsPath);
             const evidence = { run: report.run, outcome: report.outcome, findings: report.findings, events: events.filter((event) => report.findings.some((item) => item.evidence.includes(event.eventId))).map((event) => ({ eventId: event.eventId, type: event.type, toolCallId: event.toolCallId, payload: event.payload })) };
             const response = await ctx.modelRegistry.complete(model, {
-              messages: [{ role: "user", content: [{ type: "text", text: `请根据以下脱敏后的 Agent 运行诊断证据，解释最可能的根因并给出修复建议。不要引入证据中不存在的事实。\n\n${JSON.stringify(evidence)}` }], timestamp: Date.now() }],
+              messages: [{ role: "user", content: [{ type: "text", text: `请根据以下脱敏后的 Agent 运行诊断证据，解释最可能的根因，逐项引用相关 eventId，给出可执行建议和不确定性说明。不要引入证据中不存在的事实。\n\n${JSON.stringify(evidence)}` }], timestamp: Date.now() }],
             }, { cacheRetention: "none", sessionId: randomUUID() });
             const text = response.content.filter((item): item is { type: "text"; text: string } => item.type === "text").map((item) => item.text).join("\n").trim();
-            report.explanation = { generatedAt: now(), model: modelName(model), text };
+            report.explanation = { generatedAt: now(), model: modelName(model), text: explanationText(report, text) };
             await appendEvent(eventsPath, { schemaVersion: 1, eventId: `evt_${randomUUID()}`, runId: report.run.runId, sessionId: report.run.sessionId, timestamp: now(), type: "analysis", payload: { kind: "llm_explain", model: modelName(model) } });
             await writeReport(reportPath, report);
             const reportDir = dirname(reportPath);
@@ -391,7 +414,18 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       }
       try {
         const report = await readReport(reportPath);
-        const output = format === "json" ? JSON.stringify(report, null, 2) : format === "html" ? renderHtml(report) : renderMarkdown(report);
+        let fullEvidence: ReviewEvent[] = [];
+        if (full && report.run.captureMode !== "full") {
+          ctx.ui.notify("当前报告使用 redacted 采集模式；只有预先启用 captureFullContent 后，--full 才会显示证据详情。", "warning");
+        } else if (full) {
+          const eventsPath = join(dirname(dirname(reportPath)), "events.jsonl");
+          fullEvidence = evidenceEvents(report, await readEvents(eventsPath));
+        }
+        const output = format === "json"
+          ? JSON.stringify(fullEvidence.length ? { report, evidenceEvents: fullEvidence } : report, null, 2)
+          : format === "html"
+            ? renderHtml(report, fullEvidence)
+            : renderMarkdown(report, fullEvidence);
         ctx.ui.notify(output, "info");
       } catch (error) {
         ctx.ui.notify(`读取 run-review 报告失败：${String(error)}`, "warning");

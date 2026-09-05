@@ -82,6 +82,7 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   await invoke("before_provider_request", { payload: { messages: [{ content: "provider secret gamma-44" }] } }, ctx);
   await invoke("agent_settled", {}, ctx);
   await waitFor(() => notifications.some((message) => message.includes("报告生成已排队")), "settled 后未异步生成摘要");
+  assert.equal(notifications.some((message) => message.includes("主要问题：tool-failure-unrecovered")), true);
 
   const eventsPath = join(cwd, ".pi", "run-review", "events.jsonl");
   const rawEvents = await readFile(eventsPath, "utf8");
@@ -322,7 +323,7 @@ test("run-review explain 追加解释事件且不改变原 run 统计和规则�
       hasConfiguredAuth: () => true,
       complete: async (_model: unknown, request: unknown) => {
         requests.push(request);
-        return { content: [{ type: "text", text: "根据引用事件，工具失败后没有恢复。" }] };
+        return { content: [{ type: "text", text: "工具失败后没有恢复。" }] };
       },
     },
   };
@@ -351,12 +352,60 @@ test("run-review explain 追加解释事件且不改变原 run 统计和规则�
   assert.deepEqual(after.outcome, before.outcome);
   assert.deepEqual(after.findings, before.findings);
   assert.equal(after.explanation?.model, "test/explain-model");
-  assert.equal(after.explanation?.text, "根据引用事件，工具失败后没有恢复。");
+  assert.match(after.explanation?.text ?? "", /根因解释：\n工具失败后没有恢复。/);
+  assert.match(after.explanation?.text ?? "", /证据引用：evt_/);
+  assert.match(after.explanation?.text ?? "", /可执行建议：/);
+  assert.match(after.explanation?.text ?? "", /不确定性说明：/);
+  assert.match(JSON.stringify(requests[0]), /逐项引用相关 eventId/);
   const afterEvents = (await readFile(eventsPath, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as ReviewEvent);
   assert.equal(afterEvents.length, beforeEvents + 1);
   assert.equal(afterEvents.at(-1)?.type, "analysis");
   assert.equal(afterEvents.at(-1)?.runId, before.run.runId);
   assert.equal(notifications.some((message) => message.includes('"explanation"')), true);
+});
+
+test("run-review full 仅在完整采集模式显示 finding 证据详情", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-full-"));
+  const configDir = join(cwd, ".pi", "run-review");
+  await mkdir(configDir, { recursive: true });
+  await writeFile(join(configDir, "config.json"), JSON.stringify({ captureFullContent: true }), "utf8");
+  const { invoke, invokeCommand, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("tool_execution_start", { toolCallId: "call_full", toolName: "read", args: { path: "missing.ts" } }, ctx);
+  await invoke("tool_execution_end", { toolCallId: "call_full", toolName: "read", isError: true, result: { message: "not found" } }, ctx);
+  await invoke("agent_settled", {}, ctx);
+  await waitFor(() => hasJsonReport(join(configDir, "reports")), "完整采集报告未生成");
+  await invoke("session_start", {}, ctx);
+
+  await invokeCommand("run-review", "--full --format json", ctx);
+
+  const output = notifications.find((message) => message.includes('"evidenceEvents"'));
+  assert.ok(output);
+  const full = JSON.parse(output) as { report: RunReport; evidenceEvents: ReviewEvent[] };
+  assert.equal(full.report.run.captureMode, "full");
+  assert.equal(full.evidenceEvents.length > 0, true);
+  assert.equal(full.evidenceEvents.every((event) => full.report.findings.some((finding) => finding.evidence.includes(event.eventId))), true);
+});
+
+test("run-review full 不会绕过默认脱敏模式", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-full-redacted-"));
+  const { invoke, invokeCommand, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("tool_execution_start", { toolCallId: "call_redacted", toolName: "read", args: { path: "private-name.ts" } }, ctx);
+  await invoke("tool_execution_end", { toolCallId: "call_redacted", toolName: "read", isError: true, result: { message: "not found" } }, ctx);
+  await invoke("agent_settled", {}, ctx);
+  await waitFor(() => hasJsonReport(join(cwd, ".pi", "run-review", "reports")), "脱敏采集报告未生成");
+  await invoke("session_start", {}, ctx);
+
+  await invokeCommand("run-review", "--full --format json", ctx);
+
+  assert.equal(notifications.some((message) => message.includes("只有预先启用 captureFullContent")), true);
+  assert.equal(notifications.some((message) => message.includes('"evidenceEvents"')), false);
+  assert.equal(notifications.some((message) => message.includes("private-name.ts")), false);
 });
 
 test("run-review 读取损坏报告时仅提示警告", async () => {

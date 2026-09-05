@@ -1,6 +1,6 @@
-import type { RunReport } from "./schema.js";
+import type { ReviewEvent, RunReport } from "./schema.js";
 
-export function renderMarkdown(report: RunReport): string {
+export function renderMarkdown(report: RunReport, evidenceEvents: ReviewEvent[] = []): string {
   const lines = [
     `# Run Review: ${report.run.runId}`,
     "",
@@ -21,10 +21,16 @@ export function renderMarkdown(report: RunReport): string {
   if (report.explanation) {
     lines.push("## LLM Explanation", "", report.explanation.text, "");
   }
+  if (evidenceEvents.length) {
+    lines.push("## Evidence Details", "");
+    for (const event of evidenceEvents) {
+      lines.push(`### ${event.eventId} (${event.type})`, "", "```json", JSON.stringify(event.payload, null, 2), "```", "");
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
-export function renderHtml(report: RunReport): string {
-  const markdown = renderMarkdown(report).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+export function renderHtml(report: RunReport, evidenceEvents: ReviewEvent[] = []): string {
+  const markdown = renderMarkdown(report, evidenceEvents).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   return `<!doctype html><meta charset="utf-8"><title>Run Review ${report.run.runId}</title><pre>${markdown}</pre>`;
 }

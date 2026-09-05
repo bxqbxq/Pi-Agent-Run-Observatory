@@ -55,11 +55,12 @@ pi remove git:github.com/bxqbxq/Pi-Agent-Run-Observatory
 /run-review
 /run-review --explain
 /run-review --run <runId> --format json
+/run-review --full
 /run-diff <baselineRunId> <candidateRunId>
 /run-diff <baselineConfigId> <candidateConfigId> --file eval/results/8x2.json
 ```
 
-`--explain` 使用当前模型对规则证据做按需解释；解释不会覆盖规则结论，也不会计入主 Agent 的统计。
+`--explain` 使用当前模型对规则证据做按需解释；解释不会覆盖规则结论，也不会计入主 Agent 的统计。`--full` 只有在运行开始前已设置 `captureFullContent: true` 时才显示 finding 引用的完整采集事件详情，不能事后恢复默认模式未保存的内容。
 
 `/run-diff` 传入两个 `runId` 时比较单次运行；传入两个配置 ID 时比较评测集合中的成功率、失败率、unknown、隐藏验收、finding、平均/P95 耗时、turn、工具、token 和成本。配置比较可用 `--file` 指定评测汇总；省略时会从 `eval/results/` 中选择最新且同时包含两个配置的有效汇总。旧报告没有采集到 token 或成本时，相应值显示为 `null`，不会按 0 处理。
 
