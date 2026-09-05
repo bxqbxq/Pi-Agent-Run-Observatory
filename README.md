@@ -45,7 +45,7 @@ pi remove D:\path\to\pi-plugins
 pi remove git:github.com/bxqbxq/Pi-Agent-Run-Observatory
 ```
 
-本仓库已在 Windows + pi 0.84.2 上验证本地路径安装、`/reload` 和卸载；GitHub 安装命令遵循 pi package 标准格式，未纳入离线测试。
+本仓库已在 Windows + pi 0.84.2 上验证本地路径安装、`/reload`、卸载，以及 GitHub package 安装后的扩展加载。可通过 RPC 的 `get_commands` 确认已安装 package 注册了 `/run-review` 和 `/run-diff`；这项检查不调用模型。
 
 ## 使用
 
