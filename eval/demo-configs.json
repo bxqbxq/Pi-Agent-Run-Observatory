@@ -1,0 +1,13 @@
+[
+  {
+    "id": "baseline-deepseek",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low"
+  },
+  {
+    "id": "checklist-deepseek",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "systemPrompt": "完成代码修改后，在结束前重新读取所有已修改文件，并逐项核对用户要求、实现和测试断言是否一致。若要求涉及多个输入类别，确认实现和测试覆盖每一类；发现不一致时先修正再结束。不要运行命令，验证由评测器执行。"
+  }
+]

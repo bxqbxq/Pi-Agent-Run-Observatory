@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -97,4 +97,13 @@ test("仓库内的演示案例符合评测汇总 schema", async () => {
     assert.equal(summary.byConfig["baseline-deepseek"]?.runs > 0, true);
     assert.equal(summary.byConfig["checklist-deepseek"]?.runs > 0, true);
   }
+});
+
+test("固定演示配置可重跑案例且只改变候选 system prompt", async () => {
+  const configs = JSON.parse(await readFile(join(process.cwd(), "eval", "demo-configs.json"), "utf8")) as Array<{ id: string; model: string; thinking: string; systemPrompt?: string }>;
+  assert.deepEqual(configs.map((config) => config.id), ["baseline-deepseek", "checklist-deepseek"]);
+  assert.equal(configs[0]?.model, configs[1]?.model);
+  assert.equal(configs[0]?.thinking, configs[1]?.thinking);
+  assert.equal(configs[0]?.systemPrompt, undefined);
+  assert.match(configs[1]?.systemPrompt ?? "", /不要运行命令/);
 });

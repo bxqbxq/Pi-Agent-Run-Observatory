@@ -79,6 +79,12 @@ npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/res
 npm run eval -- --configs eval/configs.json --tasks eval/tasks --task add-validation --repeats 3 --output eval/results/add-validation-3x2.json
 ```
 
+仓库还保留一份仅用于复现演示案例的固定配置 `eval/demo-configs.json`。它不是实验框架，也不用于证明某种提示词更优；需要重跑“baseline → checklist”案例时执行：
+
+```powershell
+npm run eval -- --configs eval/demo-configs.json --tasks eval/tasks --task add-validation --output eval/results/demo-add-validation-2x1.json
+```
+
 使用 `--keep-failures` 时，runner 会在结果文件旁为每个失败运行导出证据包；也可用 `--failure-artifacts <path>` 指定目录。证据包包含 manifest、再次脱敏的事件、JSON/Markdown/HTML 报告、验证输出、配置快照和仅含文件名及增删行数的 diff 摘要。它不会保留完整临时工作区或源码 diff：
 
 ```powershell
@@ -99,7 +105,7 @@ npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --task no
 
 1. 用 `/run-review` 查看最近一次真实运行的诊断证据和报告路径。
 2. 用 `/run-review --explain` 检查解释是否引用证据且不改变规则结论。
-3. 用 `/run-diff baseline-deepseek checklist-deepseek --file eval/cases/add-validation-observed-recovery.json` 验证配置集合比较；该文件仅作为稳定功能示例，不用于宣称某种提示词更优。
+3. 用上面的 `eval/demo-configs.json` 命令重跑固定演示配置，再用 `/run-diff baseline-deepseek checklist-deepseek --file eval/results/demo-add-validation-2x1.json` 验证本次配置集合比较；也可用 `/run-diff baseline-deepseek checklist-deepseek --file eval/cases/add-validation-observed-recovery.json` 读取仓库内的脱敏稳定案例。案例和配置仅作为稳定功能示例，不用于宣称某种提示词更优。
 4. 用两个模型配置执行完整基准，比较成功率、unknown 比例、隐藏验收、finding 分布和 P95 耗时。
 
 ## 已知限制
