@@ -15,6 +15,7 @@ export interface ExperimentPlan {
     candidateConfig: string;
   };
   criteria: {
+    resourceBasis?: "per-run" | "per-success";
     minBaselineFailures: number;
     minSuccessRateDelta: number;
     minAcceptanceRateDelta: number;
@@ -70,6 +71,10 @@ export function parseExperimentPlan(value: unknown): ExperimentPlan {
   const minBaselineFailures = nonNegativeNumber(criteria.minBaselineFailures, "实验计划 criteria.minBaselineFailures", true);
   const minSuccessRateDelta = nonNegativeNumber(criteria.minSuccessRateDelta, "实验计划 criteria.minSuccessRateDelta");
   const minAcceptanceRateDelta = nonNegativeNumber(criteria.minAcceptanceRateDelta, "实验计划 criteria.minAcceptanceRateDelta");
+  const resourceBasis = criteria.resourceBasis === undefined ? "per-run" : criteria.resourceBasis;
+  if (resourceBasis !== "per-run" && resourceBasis !== "per-success") {
+    throw new Error("实验计划 criteria.resourceBasis 必须是 per-run 或 per-success");
+  }
   if (minBaselineFailures > repeatsPerConfig) throw new Error("实验计划 minBaselineFailures 不能大于 repeatsPerConfig");
   if (minSuccessRateDelta > 1 || minAcceptanceRateDelta > 1) throw new Error("实验计划质量比例阈值必须在 0 到 1 之间");
   return {
@@ -85,6 +90,7 @@ export function parseExperimentPlan(value: unknown): ExperimentPlan {
       candidateConfig: string(inputFingerprints.candidateConfig, "实验计划 inputFingerprints.candidateConfig"),
     },
     criteria: {
+      resourceBasis,
       minBaselineFailures,
       minSuccessRateDelta,
       minAcceptanceRateDelta,
@@ -99,6 +105,12 @@ function increaseRate(baseline: number | null, candidate: number | null): number
   return (candidate - baseline) / baseline;
 }
 
+function resourceValue(perRun: number | null, successRate: number, basis: "per-run" | "per-success"): number | null {
+  if (perRun === null) return null;
+  if (basis === "per-run") return perRun;
+  return successRate > 0 ? perRun / successRate : null;
+}
+
 export function assessExperiment(plan: ExperimentPlan, summary: EvalSummaryDocument): ExperimentAssessment {
   const baseline = summary.byConfig[plan.baselineConfigId];
   const candidate = summary.byConfig[plan.candidateConfigId];
@@ -110,8 +122,15 @@ export function assessExperiment(plan: ExperimentPlan, summary: EvalSummaryDocum
   const acceptanceRateDelta = baseline.acceptancePassRate === null || candidate.acceptancePassRate === null
     ? null
     : candidate.acceptancePassRate - baseline.acceptancePassRate;
-  const durationIncreaseRate = increaseRate(baseline.averageDurationMs, candidate.averageDurationMs);
-  const costIncreaseRate = increaseRate(baseline.averageCost, candidate.averageCost);
+  const resourceBasis = plan.criteria.resourceBasis ?? "per-run";
+  const durationIncreaseRate = increaseRate(
+    resourceValue(baseline.averageDurationMs, baseline.successRate, resourceBasis),
+    resourceValue(candidate.averageDurationMs, candidate.successRate, resourceBasis),
+  );
+  const costIncreaseRate = increaseRate(
+    resourceValue(baseline.averageCost, baseline.successRate, resourceBasis),
+    resourceValue(candidate.averageCost, candidate.successRate, resourceBasis),
+  );
   const exactSamples = (id: string, actual: number): ExperimentCheck => ({
     id,
     passed: actual === plan.repeatsPerConfig,
@@ -161,13 +180,13 @@ export function assessExperiment(plan: ExperimentPlan, summary: EvalSummaryDocum
       id: "duration-increase-rate",
       passed: durationIncreaseRate !== null && durationIncreaseRate <= plan.criteria.maxDurationIncreaseRate,
       actual: durationIncreaseRate,
-      required: `至多 ${plan.criteria.maxDurationIncreaseRate}`,
+      required: `按 ${resourceBasis} 口径至多 ${plan.criteria.maxDurationIncreaseRate}`,
     },
     {
       id: "cost-increase-rate",
       passed: costIncreaseRate !== null && costIncreaseRate <= plan.criteria.maxCostIncreaseRate,
       actual: costIncreaseRate,
-      required: `至多 ${plan.criteria.maxCostIncreaseRate}`,
+      required: `按 ${resourceBasis} 口径至多 ${plan.criteria.maxCostIncreaseRate}`,
     },
   ];
   const checks = [

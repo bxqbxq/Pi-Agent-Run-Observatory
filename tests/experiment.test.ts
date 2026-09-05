@@ -92,6 +92,33 @@ test("候选质量改善或资源预算不达标时拒绝", () => {
   assert.equal(result.checks.some((check) => !check.passed), true);
 });
 
+test("按每次成功计算时允许单次更贵但成功效率更高的候选", () => {
+  const perSuccessPlan: ExperimentPlan = {
+    ...plan,
+    criteria: { ...plan.criteria, resourceBasis: "per-success" },
+  };
+  const result = assessExperiment(perSuccessPlan, summary(
+    metric({ successRate: 0.2, failedRate: 0.8, acceptancePassRate: 0.2, averageDurationMs: 100, averageCost: 0.001 }),
+    metric({ successRate: 1, failedRate: 0, acceptancePassRate: 1, averageDurationMs: 200, averageCost: 0.002 }),
+  ));
+  assert.equal(result.decision, "adopt");
+  assert.equal(result.checks.find((check) => check.id === "duration-increase-rate")?.actual, -0.6);
+  assert.equal(result.checks.find((check) => check.id === "cost-increase-rate")?.actual, -0.6);
+});
+
+test("baseline 从未成功时无法采用每次成功资源口径", () => {
+  const perSuccessPlan: ExperimentPlan = {
+    ...plan,
+    criteria: { ...plan.criteria, resourceBasis: "per-success" },
+  };
+  const result = assessExperiment(perSuccessPlan, summary(
+    metric({ successRate: 0, failedRate: 1, acceptancePassRate: 0 }),
+    metric({ successRate: 1, failedRate: 0, acceptancePassRate: 1 }),
+  ));
+  assert.equal(result.decision, "reject");
+  assert.equal(result.checks.find((check) => check.id === "cost-increase-rate")?.actual, null);
+});
+
 test("结果任务与计划不一致时拒绝评估", () => {
   const wrongTask = { ...summary(metric(), metric()), taskId: "another-task" };
   const result = assessExperiment(plan, wrongTask);
@@ -128,6 +155,7 @@ test("实验计划拒绝不可能的样本数和质量阈值", () => {
   assert.throws(() => parseExperimentPlan({ ...plan, repeatsPerConfig: 101 }), /1 到 100/);
   assert.throws(() => parseExperimentPlan({ ...plan, criteria: { ...plan.criteria, minBaselineFailures: 6 } }), /不能大于/);
   assert.throws(() => parseExperimentPlan({ ...plan, criteria: { ...plan.criteria, minSuccessRateDelta: 1.1 } }), /0 到 1/);
+  assert.throws(() => parseExperimentPlan({ ...plan, criteria: { ...plan.criteria, resourceBasis: "per-token" } }), /per-run 或 per-success/);
 });
 
 test("实验指纹不受对象字段插入顺序影响", () => {
@@ -142,6 +170,7 @@ test("仓库中的预注册实验可从归档汇总重算结论", async () => {
     "bounded-mean": "inconclusive",
     "allocate-by-weight": "inconclusive",
     "allocate-extreme-weights": "reject",
+    "allocate-extreme-weights-lean": "reject",
   } as const;
   for (const [id, decision] of Object.entries(expected)) {
     const plan = parseExperimentPlan(JSON.parse(await readFile(join(process.cwd(), "eval", "experiments", `${id}-plan.json`), "utf8")));
