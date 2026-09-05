@@ -173,6 +173,7 @@ test("仓库中的预注册实验可从归档汇总重算结论", async () => {
     "allocate-extreme-weights": "reject",
     "allocate-extreme-weights-efficiency": "inconclusive",
     "allocate-extreme-weights-lean": "reject",
+    "weighted-mean-stability": "inconclusive",
   } as const;
   for (const [id, decision] of Object.entries(expected)) {
     const plan = parseExperimentPlan(JSON.parse(await readFile(join(process.cwd(), "eval", "experiments", `${id}-plan.json`), "utf8")));
