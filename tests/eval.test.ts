@@ -240,6 +240,27 @@ test("极端权重实验的隐藏验收拒绝朴素求和并接受数值稳定�
   await execFileAsync(process.execPath, [validator], { cwd: workspace });
 });
 
+test("加权平均实验的隐藏验收拒绝朴素公式并接受双重缩放实现", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-weighted-mean-"));
+  for (const entry of await (await import("node:fs/promises")).readdir(join(process.cwd(), "fixtures", "tiny-node"))) {
+    await cp(join(process.cwd(), "fixtures", "tiny-node", entry), join(workspace, entry), { recursive: true });
+  }
+  const acceptanceDir = join(workspace, ".eval", "acceptance");
+  await mkdir(acceptanceDir, { recursive: true });
+  await cp(
+    join(process.cwd(), "eval", "acceptance", "weighted-mean-stability.mjs"),
+    join(acceptanceDir, "weighted-mean-stability.mjs"),
+  );
+  const validator = join(".eval", "acceptance", "weighted-mean-stability.mjs");
+  const implementation = (body: string) => `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\n${body}\n`;
+  const validation = `if (!Array.isArray(values) || !Array.isArray(weights) || values.length === 0 || values.length !== weights.length || values.some((value) => !Number.isFinite(value)) || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input");`;
+  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const totalWeight = weights.reduce((sum, weight) => sum + weight, 0); return values.reduce((sum, value, index) => sum + value * weights[index], 0) / totalWeight; }`), "utf8");
+  await assert.rejects(execFileAsync(process.execPath, [validator], { cwd: workspace }));
+
+  await writeFile(join(workspace, "math.js"), implementation(`export function weightedMean(values, weights) { ${validation} const weightScale = Math.max(...weights); const valueScale = Math.max(...values.map(Math.abs)); if (valueScale === 0) return 0; const normalizedWeights = weights.map((weight) => weight / weightScale); const totalWeight = normalizedWeights.reduce((sum, weight) => sum + weight, 0); const normalizedMean = values.reduce((sum, value, index) => sum + (value / valueScale) * normalizedWeights[index], 0) / totalWeight; return normalizedMean * valueScale; }`), "utf8");
+  await execFileAsync(process.execPath, [validator], { cwd: workspace });
+});
+
 test("外部验证结果回写报告并消除未验证误报", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-reconcile-test-"));
   const reportDir = join(workspace, ".pi", "run-review", "reports");

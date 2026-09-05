@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "weighted-mean-stability-5x2",
+  "taskId": "weighted-mean-stability",
+  "hypothesis": "The concise numeric guardrail generalizes from integer allocation to a weighted-mean implementation and reduces expected resource use per successful completion.",
+  "baselineConfigId": "baseline-deepseek",
+  "candidateConfigId": "numeric-guardrail-deepseek",
+  "repeatsPerConfig": 5,
+  "inputFingerprints": {
+    "task": "sha256:97ed6e1973634400e011b1f1e2e65a456dfe088aafa725c6a0713f4d5cc5d3ca",
+    "baselineConfig": "sha256:22b5b10c1bbfd44e071e6842e7fcfd3f972e3a42f065132dfd18b3ea5a9c68ac",
+    "candidateConfig": "sha256:39bd79eb72a015cf3c93b4091c13d244848c9fbe8bccb56d838925f8baa0abbc"
+  },
+  "controls": {
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "task": "eval/experiment-tasks/weighted-mean-stability.test.json",
+    "tools": "task defaults",
+    "onlyChangedVariable": "systemPrompt"
+  },
+  "criteria": {
+    "resourceBasis": "per-success",
+    "minBaselineFailures": 1,
+    "minSuccessRateDelta": 0.2,
+    "minAcceptanceRateDelta": 0.2,
+    "maxDurationIncreaseRate": 0,
+    "maxCostIncreaseRate": 0
+  }
+}
