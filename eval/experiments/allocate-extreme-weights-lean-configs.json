@@ -1,0 +1,13 @@
+[
+  {
+    "id": "baseline-deepseek",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low"
+  },
+  {
+    "id": "numeric-guardrail-deepseek",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "systemPrompt": "实现比例算法时，有限输入也可能使中间和或乘积溢出；计算比例前先按最大量级归一化。保持实现和测试精简，并核对总和守恒、余数并列顺序、输入不可变性、非法输入和现有导出。不要运行命令，验证由评测器执行。"
+  }
+]
