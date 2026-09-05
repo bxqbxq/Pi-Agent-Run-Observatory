@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "allocate-by-weight-5x2",
+  "taskId": "allocate-by-weight",
+  "hypothesis": "An invariant-oriented checklist reduces omissions in a largest-remainder allocation task.",
+  "baselineConfigId": "baseline-deepseek",
+  "candidateConfigId": "invariant-checklist-deepseek",
+  "repeatsPerConfig": 5,
+  "inputFingerprints": {
+    "task": "sha256:009c93a4e2f466dca585764b2ca258c5f24d9441985815a256a9e292f9687ea1",
+    "baselineConfig": "sha256:22b5b10c1bbfd44e071e6842e7fcfd3f972e3a42f065132dfd18b3ea5a9c68ac",
+    "candidateConfig": "sha256:06ab1112a959f03764f8ab5cba4fa93c011cd99b9908e08e280785c2cea43490"
+  },
+  "controls": {
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "task": "eval/tasks/10-allocate-by-weight.test.json",
+    "tools": "task defaults",
+    "onlyChangedVariable": "systemPrompt"
+  },
+  "criteria": {
+    "minBaselineFailures": 1,
+    "minSuccessRateDelta": 0.2,
+    "minAcceptanceRateDelta": 0,
+    "maxDurationIncreaseRate": 0.3,
+    "maxCostIncreaseRate": 0.3
+  }
+}

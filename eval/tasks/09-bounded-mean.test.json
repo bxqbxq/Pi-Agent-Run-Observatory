@@ -1,0 +1,12 @@
+{
+  "id": "bounded-mean",
+  "prompt": "新增并导出 `boundedMean(numbers, lower, upper)`：`numbers` 必须是非空数组，所有数组元素以及 `lower`、`upper` 都必须是有限 number，且 `lower <= upper`，否则抛出 TypeError。计算时先把每个元素限制在 `[lower, upper]`，再返回这些值的算术平均数；不得修改输入数组，也不得改变已有导出。请在 `math.test.js` 中为正常计算、发生截断、非法元素和非法边界添加测试。",
+  "fixture": "fixtures/tiny-node",
+  "validate": ["npm test"],
+  "acceptance": {
+    "fixture": "eval/acceptance",
+    "commands": ["node .eval/acceptance/bounded-mean.mjs"],
+    "requiredChanges": ["math.js", "math.test.js"]
+  },
+  "tags": ["feature", "validation", "immutability"]
+}

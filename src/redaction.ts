@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stableValue } from "./stable.js";
 
 const SECRET_PATTERNS: RegExp[] = [
   /\b(?:sk|pk)-[A-Za-z0-9_-]{16,}\b/g,
@@ -26,14 +27,6 @@ export interface MessageContentSummary {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, stableValue(item)]));
-  }
-  return value;
 }
 
 function valueStructure(value: unknown, depth = 0): unknown {

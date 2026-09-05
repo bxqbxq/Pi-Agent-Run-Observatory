@@ -1,0 +1,12 @@
+{
+  "id": "allocate-by-weight",
+  "prompt": "新增并导出 `allocateByWeight(total, weights)`，使用最大余数法按权重分配整数总量。`total` 必须是非负整数；`weights` 必须是非空数组且每项都是严格大于 0 的有限 number，否则抛出 TypeError。先按精确比例向下取整，再把剩余单位按小数余数从大到小逐个分配；余数相同时优先原数组中索引较小的项。返回与 `weights` 等长的非负整数数组，结果总和必须等于 `total`，不得修改输入数组，也不得改变已有导出。请在 `math.test.js` 中覆盖普通比例、余数并列、总量为 0 和非法输入。",
+  "fixture": "fixtures/tiny-node",
+  "validate": ["npm test"],
+  "acceptance": {
+    "fixture": "eval/acceptance",
+    "commands": ["node .eval/acceptance/allocate-by-weight.mjs"],
+    "requiredChanges": ["math.js", "math.test.js"]
+  },
+  "tags": ["feature", "algorithm", "validation", "immutability"]
+}

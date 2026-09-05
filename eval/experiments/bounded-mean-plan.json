@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "bounded-mean-5x2",
+  "taskId": "bounded-mean",
+  "hypothesis": "A contract-oriented checklist reduces omissions on a multi-part validation and immutability task.",
+  "baselineConfigId": "baseline-deepseek",
+  "candidateConfigId": "contract-checklist-deepseek",
+  "repeatsPerConfig": 5,
+  "inputFingerprints": {
+    "task": "sha256:64fdf4d37e76825f1293409ca0a9b9ca00de7cf8444057b2857a3c68122da426",
+    "baselineConfig": "sha256:22b5b10c1bbfd44e071e6842e7fcfd3f972e3a42f065132dfd18b3ea5a9c68ac",
+    "candidateConfig": "sha256:34e24c6409e85e8d7bc24f51c61d10b61388beac73ab61577c1ec3f2b3802bdf"
+  },
+  "controls": {
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low",
+    "task": "eval/tasks/09-bounded-mean.test.json",
+    "tools": "task defaults",
+    "onlyChangedVariable": "systemPrompt"
+  },
+  "criteria": {
+    "minBaselineFailures": 1,
+    "minSuccessRateDelta": 0.2,
+    "minAcceptanceRateDelta": 0,
+    "maxDurationIncreaseRate": 0.3,
+    "maxCostIncreaseRate": 0.3
+  }
+}

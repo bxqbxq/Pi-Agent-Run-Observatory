@@ -10,6 +10,7 @@
   },
   "scripts": {
     "eval": "tsx eval/run.ts",
+    "eval:assess": "tsx eval/assess.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

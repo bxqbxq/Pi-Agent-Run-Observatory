@@ -4,9 +4,11 @@ import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { analyzeRun } from "./analyzer.js";
+import { experimentFingerprint } from "./experiment.js";
 import type { RunReport } from "./schema.js";
 import type { ReviewEvent } from "./schema.js";
 import { renderHtml, renderMarkdown } from "./render.js";
+import { redactText, redactValue } from "./redaction.js";
 import { appendEvent, readEvents, readReport, writeReport } from "./storage.js";
 
 function childEnvironment(): NodeJS.ProcessEnv {
@@ -71,6 +73,8 @@ export interface EvalResult {
   changedFiles?: string[];
   acceptance?: EvalAcceptanceResult;
   expectationPassed?: boolean;
+  failureArtifactDir?: string;
+  failureArtifactError?: string;
 }
 
 export function parseRepeatCount(value: string | undefined): number {
@@ -198,6 +202,83 @@ function changedFilesFromStatus(output: string): string[] {
     .filter(Boolean)
     .map(normalizedWorkspacePath)
     .sort();
+}
+
+function artifactSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+}
+
+function serializeJson(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+async function diffSummary(workspace: string, changedFiles: string[]): Promise<{ changedFiles: string[]; trackedChanges: Array<{ path: string; additions: number | null; deletions: number | null }> }> {
+  const changed = new Set(changedFiles);
+  const numstat = await runProcess("git", ["diff", "--numstat", "HEAD", "--"], workspace, 30_000);
+  const trackedChanges = numstat.output.split(/\r?\n/).flatMap((line) => {
+    const [added, deleted, ...pathParts] = line.split("\t");
+    const path = normalizedWorkspacePath(pathParts.join("\t"));
+    if (!path || !changed.has(path)) return [];
+    return [{
+      path,
+      additions: added === "-" ? null : Number.parseInt(added ?? "", 10),
+      deletions: deleted === "-" ? null : Number.parseInt(deleted ?? "", 10),
+    }];
+  });
+  return { changedFiles, trackedChanges };
+}
+
+async function exportFailureArtifacts(
+  workspace: string,
+  rootDir: string,
+  task: EvalTask,
+  config: EvalConfig,
+  result: EvalResult,
+): Promise<string> {
+  const runId = result.report?.run.runId ?? `run_${randomUUID()}`;
+  const sample = result.sampleIndex ?? 1;
+  const artifactDir = resolve(rootDir, `${artifactSegment(config.id)}__${artifactSegment(task.id)}__sample-${sample}__${artifactSegment(runId)}`);
+  await mkdir(artifactDir, { recursive: true });
+  const redactionOptions = { cwd: workspace };
+  const manifest = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    taskId: task.id,
+    configId: config.id,
+    sampleIndex: sample,
+    status: result.status,
+    runId,
+    changed: result.changed ?? false,
+    acceptance: result.acceptance,
+    error: result.error,
+  };
+  const validations = result.validations.map((validation) => ({
+    ...validation,
+    output: redactText(validation.output, redactionOptions),
+  }));
+  const eventsPath = join(workspace, ".pi", "run-review", "events.jsonl");
+  let events: ReviewEvent[] = [];
+  try {
+    events = await readEvents(eventsPath);
+  } catch {
+    // A process startup failure may occur before the extension creates its event log.
+  }
+  await Promise.all([
+    writeFile(join(artifactDir, "manifest.json"), serializeJson(redactValue(manifest, redactionOptions)), "utf8"),
+    writeFile(join(artifactDir, "config.json"), serializeJson(redactValue(config, redactionOptions)), "utf8"),
+    writeFile(join(artifactDir, "validations.json"), serializeJson(redactValue(validations, redactionOptions)), "utf8"),
+    writeFile(join(artifactDir, "diff-summary.json"), serializeJson(redactValue(await diffSummary(workspace, result.changedFiles ?? []), redactionOptions)), "utf8"),
+    writeFile(join(artifactDir, "events.jsonl"), events.map((event) => JSON.stringify(redactValue(event, redactionOptions))).join("\n") + (events.length ? "\n" : ""), "utf8"),
+  ]);
+  if (result.report) {
+    const report = redactValue(result.report, redactionOptions) as RunReport;
+    await Promise.all([
+      writeFile(join(artifactDir, "report.json"), serializeJson(report), "utf8"),
+      writeFile(join(artifactDir, "report.md"), redactText(renderMarkdown(report), redactionOptions), "utf8"),
+      writeFile(join(artifactDir, "report.html"), redactText(renderHtml(report), redactionOptions), "utf8"),
+    ]);
+  }
+  return artifactDir;
 }
 
 export function evaluateExpectation(expected: EvalExpected | undefined, result: Pick<EvalResult, "status" | "report" | "changed">): boolean | undefined {
@@ -351,7 +432,7 @@ export async function reconcileEvalReport(workspace: string, validations: EvalRe
   return reconciled;
 }
 
-export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; piCliPath?: string; keepWorkspace?: boolean; sampleIndex?: number }): Promise<EvalResult> {
+export async function runEvalTask(task: EvalTask, config: EvalConfig, options: { rootDir: string; extensionPath: string; piCliPath?: string; keepWorkspace?: boolean; sampleIndex?: number; failureArtifactsDir?: string }): Promise<EvalResult> {
   const startedAt = Date.now();
   const workspace = await mkdtemp(join(tmpdir(), `pi-run-review-${task.id}-`));
   try {
@@ -379,7 +460,7 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
       : "评测器会在 Agent 结束后自动执行验证命令；请不要尝试运行命令，只完成文件修改并在完成后结束。";
     args.push(`${task.prompt}\n\n${validationInstruction}`);
     const piResult = await runPiProcess(process.execPath, [options.piCliPath ?? piCliPath(options.rootDir), ...args], workspace, task.timeoutMs ?? 300_000);
-    const diff = await runProcess("git", ["status", "--porcelain"], workspace, 30_000);
+    const diff = await runProcess("git", ["status", "--porcelain", "--untracked-files=all"], workspace, 30_000);
     const changedFiles = changedFilesFromStatus(diff.output);
     const changed = changedFiles.length > 0;
     if (task.acceptance?.fixture) {
@@ -426,14 +507,22 @@ export async function runEvalTask(task: EvalTask, config: EvalConfig, options: {
             : undefined,
     };
     result.expectationPassed = evaluateExpectation(task.expected, result);
+    if (result.status !== "success" && options.failureArtifactsDir) {
+      try {
+        result.failureArtifactDir = await exportFailureArtifacts(workspace, options.failureArtifactsDir, task, config, result);
+      } catch (error) {
+        result.failureArtifactError = redactText(error instanceof Error ? error.message : String(error), { cwd: workspace });
+      }
+    }
     return result;
   } finally {
     if (!options.keepWorkspace) await rm(workspace, { recursive: true, force: true });
   }
 }
 
-export async function writeEvalSummary(path: string, results: EvalResult[]): Promise<void> {
+export async function writeEvalSummary(path: string, results: EvalResult[], inputs?: { tasks: EvalTask[]; configs: EvalConfig[] }): Promise<void> {
   const configs = [...new Set(results.map((item) => item.configId))];
+  const taskIds = [...new Set(results.map((item) => item.taskId))];
   const byConfig = Object.fromEntries(configs.map((configId) => {
     const selected = results.filter((item) => item.configId === configId);
     const sortedDurations = selected.map((item) => item.durationMs).sort((a, b) => a - b);
@@ -472,5 +561,17 @@ export async function writeEvalSummary(path: string, results: EvalResult[]): Pro
     return [configId, summary];
   }));
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), byConfig, results }, null, 2)}\n`, "utf8");
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    ...(taskIds.length === 1 ? { taskId: taskIds[0] } : {}),
+    ...(inputs ? {
+      inputFingerprints: {
+        tasks: Object.fromEntries(inputs.tasks.map((task) => [task.id, experimentFingerprint(task)])),
+        configs: Object.fromEntries(inputs.configs.map((config) => [config.id, experimentFingerprint(config)])),
+      },
+    } : {}),
+    byConfig,
+    results,
+  }, null, 2)}\n`, "utf8");
 }

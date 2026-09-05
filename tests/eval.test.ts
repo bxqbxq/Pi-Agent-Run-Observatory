@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, normalize } from "node:path";
 import { test } from "node:test";
@@ -145,9 +145,9 @@ test("负向任务集包含四个带预期的独立场景", async () => {
   assert.equal(tasks.every((task) => task.expected !== undefined), true);
 });
 
-test("八个正常任务都有不可见且能拒绝原始基线的验收器", async () => {
+test("十个正常任务都有不可见且能拒绝原始基线的验收器", async () => {
   const tasks = await loadTasks(join(process.cwd(), "eval", "tasks"));
-  assert.equal(tasks.length, 8);
+  assert.equal(tasks.length, 10);
   assert.equal(tasks.every((task) => task.acceptance?.fixture === "eval/acceptance"), true);
 
   for (const task of tasks) {
@@ -166,7 +166,7 @@ test("八个正常任务都有不可见且能拒绝原始基线的验收器", as
   }
 });
 
-test("八个隐藏验收器都接受满足公开要求的最小候选", async () => {
+test("十个隐藏验收器都接受满足公开要求的最小候选", async () => {
   const candidates: Record<string, Record<string, string>> = {
     "add-negative": {
       "math.test.js": `import assert from "node:assert/strict";\nimport { test } from "node:test";\nimport { add, clamp } from "./math.js";\ntest("add", () => { assert.equal(add(2, 3), 5); assert.equal(add(-2, 3), 1); assert.equal(add(-2, -3), -5); });\ntest("clamp", () => assert.equal(clamp(11, 0, 10), 10));\n`,
@@ -191,6 +191,14 @@ test("八个隐藏验收器都接受满足公开要求的最小候选", async ()
     },
     "test-organization": {
       "math.test.js": `import assert from "node:assert/strict";\nimport { test } from "node:test";\nimport { add, clamp } from "./math.js";\nfunction assertClampCases(cases) { for (const [value, min, max, expected] of cases) assert.equal(clamp(value, min, max), expected); }\ntest("add", () => assert.equal(add(2, 3), 5));\ntest("clamp", () => assertClampCases([[-1, 0, 10, 0], [5, 0, 10, 5], [11, 0, 10, 10]]));\n`,
+    },
+    "bounded-mean": {
+      "math.js": `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\nexport function boundedMean(numbers, lower, upper) { if (!Array.isArray(numbers) || numbers.length === 0 || !Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper || numbers.some((value) => !Number.isFinite(value))) throw new TypeError("invalid boundedMean input"); return numbers.reduce((sum, value) => sum + Math.min(Math.max(value, lower), upper), 0) / numbers.length; }\n`,
+      "math.test.js": `import assert from "node:assert/strict";\nimport { test } from "node:test";\nimport { add, boundedMean, clamp } from "./math.js";\ntest("existing exports", () => { assert.equal(add(2, 3), 5); assert.equal(clamp(11, 0, 10), 10); });\ntest("boundedMean", () => { assert.equal(boundedMean([1, 5, 10], 2, 8), 5); assert.throws(() => boundedMean([], 0, 1), TypeError); });\n`,
+    },
+    "allocate-by-weight": {
+      "math.js": `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\nexport function allocateByWeight(total, weights) { if (!Number.isInteger(total) || total < 0 || !Array.isArray(weights) || weights.length === 0 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid allocation input"); const sum = weights.reduce((value, weight) => value + weight, 0); const exact = weights.map((weight) => total * weight / sum); const result = exact.map(Math.floor); let remaining = total - result.reduce((value, item) => value + item, 0); const order = exact.map((value, index) => ({ index, fraction: value - result[index] })).sort((left, right) => right.fraction - left.fraction || left.index - right.index); for (let index = 0; index < remaining; index += 1) result[order[index].index] += 1; return result; }\n`,
+      "math.test.js": `import assert from "node:assert/strict";\nimport { test } from "node:test";\nimport { add, allocateByWeight, clamp } from "./math.js";\ntest("existing exports", () => { assert.equal(add(2, 3), 5); assert.equal(clamp(11, 0, 10), 10); });\ntest("allocateByWeight", () => { assert.deepEqual(allocateByWeight(10, [1, 1, 1]), [4, 3, 3]); assert.deepEqual(allocateByWeight(7, [1, 2]), [2, 5]); assert.throws(() => allocateByWeight(-1, [1]), TypeError); });\n`,
     },
   };
   const tasks = await loadTasks(join(process.cwd(), "eval", "tasks"));
@@ -418,4 +426,64 @@ test("评测 runner 端到端保留验证失败诊断", async () => {
   assert.equal(result.report?.outcome.status, "failed");
   assert.equal(result.report?.outcome.verification, "failed");
   assert.equal(result.report?.findings.some((item) => item.ruleId === "verification-failure-ignored"), true);
+});
+
+test("失败运行导出脱敏证据包并在清理工作区后仍可审计", async () => {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pi-run-review-failure-artifacts-test-"));
+  const secret = "sk-1234567890abcdefghijklmnop";
+  const result = await runEvalTask(
+    {
+      id: "artifact-failure",
+      prompt: "FAIL_VALIDATION",
+      fixture: "fixtures/tiny-node",
+      validate: ["npm test"],
+      timeoutMs: 5_000,
+      acceptance: { requiredChanges: ["required.txt"] },
+    },
+    { id: "fake-artifact", model: "FAIL_VALIDATION", systemPrompt: `api_key=${secret}` },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi-failure.mjs"),
+      failureArtifactsDir: artifactRoot,
+      sampleIndex: 3,
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.ok(result.failureArtifactDir);
+  const files = (await readdir(result.failureArtifactDir)).sort();
+  assert.deepEqual(files, ["config.json", "diff-summary.json", "events.jsonl", "manifest.json", "report.html", "report.json", "report.md", "validations.json"]);
+  const manifest = JSON.parse(await readFile(join(result.failureArtifactDir, "manifest.json"), "utf8"));
+  assert.equal(manifest.taskId, "artifact-failure");
+  assert.equal(manifest.configId, "fake-artifact");
+  assert.equal(manifest.sampleIndex, 3);
+  assert.equal(manifest.status, "failed");
+  assert.match(manifest.error, /缺少必需改动/);
+  assert.doesNotMatch(manifest.error, new RegExp(secret));
+  const diffSummary = JSON.parse(await readFile(join(result.failureArtifactDir, "diff-summary.json"), "utf8"));
+  assert.deepEqual(diffSummary.changedFiles, ["agent-change.txt", "test/failing.test.js"]);
+  const bundle = (await Promise.all(files.map((file) => readFile(join(result.failureArtifactDir!, file), "utf8")))).join("\n");
+  assert.doesNotMatch(bundle, new RegExp(secret));
+  assert.doesNotMatch(bundle, /pi-run-review-artifact-failure-/);
+  assert.match(bundle, /<redacted>/);
+  assert.match(bundle, /<project>/);
+});
+
+test("成功运行不生成失败证据包", async () => {
+  const artifactRoot = await mkdtemp(join(tmpdir(), "pi-run-review-success-artifacts-test-"));
+  const result = await runEvalTask(
+    { id: "artifact-success", prompt: "完成任务", fixture: "fixtures/tiny-node", validate: ["npm test"], timeoutMs: 5_000 },
+    { id: "fake-artifact" },
+    {
+      rootDir: process.cwd(),
+      extensionPath: "unused-extension.ts",
+      piCliPath: join(process.cwd(), "tests", "helpers", "fake-pi.mjs"),
+      failureArtifactsDir: artifactRoot,
+    },
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(result.failureArtifactDir, undefined);
+  assert.deepEqual(await readdir(artifactRoot), []);
 });

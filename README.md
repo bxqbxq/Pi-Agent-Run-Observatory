@@ -67,10 +67,10 @@ npm run eval -- --configs eval/configs.json
 npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --output eval/results/failure-latest.json
 ```
 
-正常基准固定为 `eval/tasks/` 下的 8 个任务；例如两个配置各跑一次：
+正常基准当前包含 `eval/tasks/` 下的 10 个任务；例如两个配置各跑一次：
 
 ```powershell
-npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/results/8x2.json
+npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/results/10x2.json
 ```
 
 用 `--task` 只运行一个任务，用 `--repeats` 对每个“配置 x 任务”组合重复采样。每条结果会记录从 1 开始的 `sampleIndex`，配置汇总中的 `runs` 是全部重复样本数：
@@ -78,6 +78,21 @@ npm run eval -- --configs eval/configs.json --tasks eval/tasks --output eval/res
 ```powershell
 npm run eval -- --configs eval/demo-configs.json --tasks eval/tasks --task add-validation --repeats 3 --output eval/results/demo-add-validation-3x2.json
 ```
+
+使用 `--keep-failures` 时，runner 会在结果文件旁为每个失败运行导出证据包；也可用 `--failure-artifacts <path>` 指定目录。证据包包含 manifest、再次脱敏的事件、JSON/Markdown/HTML 报告、验证输出、配置快照和仅含文件名及增删行数的 diff 摘要。它不会保留完整临时工作区或源码 diff：
+
+```powershell
+npm run eval -- --configs eval/configs.json --tasks eval/failure-tasks --task no-change --keep-failures --output eval/results/failure-smoke.json
+```
+
+配置实验可在运行前用计划文件锁定样本数、质量提升和资源预算，并在运行后自动判定：
+
+```powershell
+npm run eval -- --configs eval/experiments/allocate-by-weight-configs.json --tasks eval/tasks --task allocate-by-weight --repeats 5 --keep-failures --output eval/results/allocate-by-weight-5x2.json
+npm run eval:assess -- --plan eval/experiments/allocate-by-weight-plan.json --result eval/results/allocate-by-weight-5x2.json --output eval/results/allocate-by-weight-5x2-assessment.json
+```
+
+仓库内两个预注册 5×2 实验均未证明 checklist 提示词能提高成功率，因此当前不采用候选配置。聚合结果和完整方法边界见 `eval/experiments/`。
 
 结果中的 `changedFiles` 记录 Agent 在隐藏夹具注入前产生的真实改动；`acceptance` 给出单次任务级验收及失败原因。汇总中的 `acceptancePassRate` 是配置在带验收任务上的语义通过率，较旧版仅依赖“任意改动 + 基线测试通过”的 `successRate` 更严格。
 

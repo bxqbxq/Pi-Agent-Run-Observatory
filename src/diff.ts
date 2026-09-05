@@ -5,6 +5,11 @@ import type { EvalConfigSummary } from "./eval.js";
 export interface EvalSummaryDocument {
   schemaVersion: 1;
   generatedAt: string;
+  taskId?: string;
+  inputFingerprints?: {
+    tasks: Record<string, string>;
+    configs: Record<string, string>;
+  };
   byConfig: Record<string, EvalConfigSummary>;
 }
 
@@ -46,6 +51,14 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function stringRecord(value: unknown, label: string): Record<string, string> {
+  const input = object(value, label);
+  if (Object.values(input).some((item) => typeof item !== "string" || !item)) {
+    throw new Error(`${label} 的值必须是非空字符串`);
+  }
+  return input as Record<string, string>;
+}
+
 function metric(value: unknown, label: string, name: string, optional = false): number | null {
   if ((value === null && NULLABLE_METRICS.has(name)) || (optional && value === undefined)) return null;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${label} 必须是非负数字或 null`);
@@ -73,7 +86,17 @@ export function parseEvalSummary(value: unknown): EvalSummaryDocument {
   if (typeof input.generatedAt !== "string" || !Number.isFinite(Date.parse(input.generatedAt))) throw new Error("评测汇总 generatedAt 无效");
   const byConfigInput = object(input.byConfig, "评测汇总 byConfig");
   const byConfig = Object.fromEntries(Object.entries(byConfigInput).map(([configId, summary]) => [configId, parseConfigSummary(summary, configId)]));
-  return { schemaVersion: 1, generatedAt: input.generatedAt, byConfig };
+  const taskId = input.taskId === undefined
+    ? undefined
+    : typeof input.taskId === "string" && input.taskId.trim()
+      ? input.taskId
+      : (() => { throw new Error("评测汇总 taskId 必须是非空字符串"); })();
+  const fingerprints = input.inputFingerprints === undefined ? undefined : object(input.inputFingerprints, "评测汇总 inputFingerprints");
+  const inputFingerprints = fingerprints ? {
+    tasks: stringRecord(fingerprints.tasks, "评测汇总 inputFingerprints.tasks"),
+    configs: stringRecord(fingerprints.configs, "评测汇总 inputFingerprints.configs"),
+  } : undefined;
+  return { schemaVersion: 1, generatedAt: input.generatedAt, taskId, inputFingerprints, byConfig };
 }
 
 export async function readEvalSummary(path: string): Promise<EvalSummaryDocument> {
