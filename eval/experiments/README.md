@@ -10,3 +10,5 @@ npm run eval:assess -- --plan eval/experiments/bounded-mean-plan.json --result e
 ```
 
 当前两个实验均为 `inconclusive`：baseline 在 `bounded-mean` 和 `allocate-by-weight` 上都是 5/5 成功，没有满足“至少一次 baseline 失败”的区分度门槛。两个候选提示词都没有提高成功率；其中分配任务的 invariant checklist 虽将 `tool-failure-unrecovered` 发生率从 60% 降到 0%，但平均耗时增加 59.2%、平均成本增加 31.0%，超过预注册预算。因此两个提示词都不采用。
+
+下一轮使用独立的 `eval/experiment-tasks/allocate-extreme-weights.test.json` 检验数值稳定性遗漏。该任务不加入常规 10 任务基准，避免为了制造区分度改变已建立的基准口径。

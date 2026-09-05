@@ -220,6 +220,26 @@ test("十个隐藏验收器都接受满足公开要求的最小候选", async ()
   }
 });
 
+test("极端权重实验的隐藏验收拒绝朴素求和并接受数值稳定实现", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-extreme-weights-"));
+  for (const entry of await (await import("node:fs/promises")).readdir(join(process.cwd(), "fixtures", "tiny-node"))) {
+    await cp(join(process.cwd(), "fixtures", "tiny-node", entry), join(workspace, entry), { recursive: true });
+  }
+  const acceptanceDir = join(workspace, ".eval", "acceptance");
+  await mkdir(acceptanceDir, { recursive: true });
+  await cp(
+    join(process.cwd(), "eval", "acceptance", "allocate-extreme-weights.mjs"),
+    join(acceptanceDir, "allocate-extreme-weights.mjs"),
+  );
+  const validator = join(".eval", "acceptance", "allocate-extreme-weights.mjs");
+  const implementation = (body: string) => `export function add(a, b) { return a + b; }\nexport function clamp(value, min, max) { return Math.min(Math.max(value, min), max); }\n${body}\n`;
+  await writeFile(join(workspace, "math.js"), implementation(`export function allocateByWeight(total, weights) { if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(weights) || weights.length === 0 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input"); const sum = weights.reduce((value, weight) => value + weight, 0); const exact = weights.map((weight) => total * weight / sum); const result = exact.map(Math.floor); let remaining = total - result.reduce((value, item) => value + item, 0); const order = exact.map((value, index) => ({ index, fraction: value - result[index] })).sort((left, right) => right.fraction - left.fraction || left.index - right.index); for (let index = 0; index < remaining; index += 1) result[order[index].index] += 1; return result; }`), "utf8");
+  await assert.rejects(execFileAsync(process.execPath, [validator], { cwd: workspace }));
+
+  await writeFile(join(workspace, "math.js"), implementation(`export function allocateByWeight(total, weights) { if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(weights) || weights.length === 0 || weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) throw new TypeError("invalid input"); const scale = Math.max(...weights); const normalized = weights.map((weight) => weight / scale); const sum = normalized.reduce((value, weight) => value + weight, 0); const exact = normalized.map((weight) => total * weight / sum); const result = exact.map(Math.floor); let remaining = total - result.reduce((value, item) => value + item, 0); const order = exact.map((value, index) => ({ index, fraction: value - result[index] })).sort((left, right) => right.fraction - left.fraction || left.index - right.index); for (let index = 0; index < remaining; index += 1) result[order[index].index] += 1; return result; }`), "utf8");
+  await execFileAsync(process.execPath, [validator], { cwd: workspace });
+});
+
 test("外部验证结果回写报告并消除未验证误报", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "pi-run-review-reconcile-test-"));
   const reportDir = join(workspace, ".pi", "run-review", "reports");
