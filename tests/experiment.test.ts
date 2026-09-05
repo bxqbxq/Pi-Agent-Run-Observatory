@@ -186,6 +186,25 @@ test("加权平均校准计划在运行前锁定任务和 baseline 指纹", asyn
   }
 });
 
+test("加权平均校准归档遵循预注册难度选择规则", async () => {
+  const calibrationDir = join(process.cwd(), "eval", "calibration");
+  const plan = JSON.parse(await readFile(join(calibrationDir, "weighted-mean-plan.json"), "utf8"));
+  const result = JSON.parse(await readFile(join(calibrationDir, "weighted-mean-result.json"), "utf8"));
+  assert.equal(result.calibrationId, plan.id);
+  assert.equal(result.configFingerprint, plan.configFingerprint);
+  assert.equal(result.repeatsPerTask, plan.repeatsPerTask);
+  const tasks = result.tasks as Record<string, { fingerprint: string; summary: { runs: number; successRate: number } }>;
+  const eligible = Object.entries(tasks)
+    .filter(([, task]) => task.summary.successRate >= plan.selection.minSuccessRate && task.summary.successRate <= plan.selection.maxSuccessRate)
+    .map(([taskId]) => taskId);
+  assert.deepEqual(eligible, ["weighted-mean-stability"]);
+  assert.equal(result.selection.selectedTaskId, eligible[0]);
+  for (const taskEntry of plan.tasks) {
+    assert.equal(tasks[taskEntry.id].fingerprint, taskEntry.fingerprint);
+    assert.equal(tasks[taskEntry.id].summary.runs, plan.repeatsPerTask);
+  }
+});
+
 test("仓库中的预注册实验可从归档汇总重算结论", async () => {
   const expected = {
     "bounded-mean": "inconclusive",
