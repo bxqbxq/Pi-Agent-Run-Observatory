@@ -1,0 +1,7 @@
+[
+  {
+    "id": "baseline-deepseek",
+    "model": "deepseek/deepseek-v4-flash",
+    "thinking": "low"
+  }
+]

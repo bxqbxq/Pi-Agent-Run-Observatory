@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "weighted-mean-difficulty-calibration",
+  "configId": "baseline-deepseek",
+  "configFingerprint": "sha256:22b5b10c1bbfd44e071e6842e7fcfd3f972e3a42f065132dfd18b3ea5a9c68ac",
+  "repeatsPerTask": 10,
+  "tasks": [
+    {
+      "id": "weighted-mean-basic",
+      "tier": "basic",
+      "path": "eval/calibration-tasks/weighted-mean-basic.test.json",
+      "fingerprint": "sha256:6c09a5d3724ede6d5c89e58618e4abb45f9146b558af3f730eb9431855dc848e"
+    },
+    {
+      "id": "weighted-mean-wide-weights",
+      "tier": "intermediate",
+      "path": "eval/calibration-tasks/weighted-mean-wide-weights.test.json",
+      "fingerprint": "sha256:40b224559822d0cfd2f1958565c1d924f138c5dd76abda4c4c0251609280657e"
+    },
+    {
+      "id": "weighted-mean-stability",
+      "tier": "extreme",
+      "path": "eval/experiment-tasks/weighted-mean-stability.test.json",
+      "fingerprint": "sha256:97ed6e1973634400e011b1f1e2e65a456dfe088aafa725c6a0713f4d5cc5d3ca"
+    }
+  ],
+  "selection": {
+    "minSuccessRate": 0.2,
+    "maxSuccessRate": 0.6,
+    "targetSuccessRate": 0.4,
+    "primaryMetric": "successRate",
+    "tieBreaker": "prefer the smaller gap between acceptancePassRate and successRate"
+  }
+}

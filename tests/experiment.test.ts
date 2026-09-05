@@ -166,6 +166,26 @@ test("实验指纹不受对象字段插入顺序影响", () => {
   );
 });
 
+test("加权平均校准计划在运行前锁定任务和 baseline 指纹", async () => {
+  const calibrationDir = join(process.cwd(), "eval", "calibration");
+  const calibration = JSON.parse(await readFile(join(calibrationDir, "weighted-mean-plan.json"), "utf8"));
+  const configs = JSON.parse(await readFile(join(calibrationDir, "baseline-deepseek.json"), "utf8"));
+  assert.equal(calibration.repeatsPerTask, 10);
+  assert.deepEqual(calibration.selection, {
+    minSuccessRate: 0.2,
+    maxSuccessRate: 0.6,
+    targetSuccessRate: 0.4,
+    primaryMetric: "successRate",
+    tieBreaker: "prefer the smaller gap between acceptancePassRate and successRate",
+  });
+  assert.equal(calibration.configFingerprint, experimentFingerprint(configs[0]));
+  for (const taskEntry of calibration.tasks) {
+    const task = JSON.parse(await readFile(join(process.cwd(), taskEntry.path), "utf8"));
+    assert.equal(task.id, taskEntry.id);
+    assert.equal(taskEntry.fingerprint, experimentFingerprint(task));
+  }
+});
+
 test("仓库中的预注册实验可从归档汇总重算结论", async () => {
   const expected = {
     "bounded-mean": "inconclusive",

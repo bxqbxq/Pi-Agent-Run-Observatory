@@ -1,0 +1,12 @@
+{
+  "id": "weighted-mean-wide-weights",
+  "prompt": "新增并导出 `weightedMean(values, weights)`。`values` 和 `weights` 必须是长度相同的非空数组；每个 value 必须是绝对值不超过 1000000 的有限 number，每个 weight 必须是严格大于 0 的有限 number，否则抛出 TypeError。返回按权重计算的算术平均数，所有符合约束的权重都必须得到有限且数值稳定的结果；不得修改输入数组，也不得改变已有导出。请在 `math.test.js` 中覆盖普通输入、不等权重、非法输入和输入不可变性。",
+  "fixture": "fixtures/tiny-node",
+  "validate": ["npm test"],
+  "acceptance": {
+    "fixture": "eval/acceptance",
+    "commands": ["node .eval/acceptance/weighted-mean-wide-weights.mjs"],
+    "requiredChanges": ["math.js", "math.test.js"]
+  },
+  "tags": ["calibration", "intermediate", "numeric-stability", "validation"]
+}
