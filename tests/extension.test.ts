@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -81,7 +81,7 @@ test("默认扩展采集不持久化消息、工具参数或 provider payload �
   await invoke("message_end", { message: { role: "assistant", content: "任务已经完成，测试已通过。private answer beta-43" } }, ctx);
   await invoke("before_provider_request", { payload: { messages: [{ content: "provider secret gamma-44" }] } }, ctx);
   await invoke("agent_settled", {}, ctx);
-  assert.equal(notifications.some((message) => message.includes("报告生成已排队")), true);
+  await waitFor(() => notifications.some((message) => message.includes("报告生成已排队")), "settled 后未异步生成摘要");
 
   const eventsPath = join(cwd, ".pi", "run-review", "events.jsonl");
   const rawEvents = await readFile(eventsPath, "utf8");
@@ -182,13 +182,40 @@ test("报告目录不可写时 settled handler 隔离异常并清理 active run"
   try {
     await assert.doesNotReject(invoke("agent_settled", {}, ctx));
     await waitFor(() => errors.some((message) => message.includes("生成报告失败")), "报告写入失败未写入后台日志");
-    assert.equal(notifications.some((message) => message.includes("生成报告失败")), false);
-    await assert.doesNotReject(invoke("session_start", {}, ctx));
   } finally {
     console.error = originalError;
   }
   assert.equal(notifications.some((message) => message.includes("生成报告失败")), true);
   await assert.doesNotReject(invoke("agent_start", {}, ctx));
+});
+
+test("事件日志读取失败时 settled handler 隔离异常并清理 active run", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-read-failure-"));
+  const { invoke, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  const eventsPath = join(cwd, ".pi", "run-review", "events.jsonl");
+  const backupPath = `${eventsPath}.bak`;
+  const brokenPath = `${eventsPath}.broken`;
+  await rename(eventsPath, backupPath);
+  await mkdir(eventsPath);
+  const originalError = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+  try {
+    await assert.doesNotReject(invoke("agent_settled", {}, ctx));
+    await waitFor(() => errors.some((message) => message.includes("完成运行诊断失败")), "事件读取失败未写入后台日志");
+    await rename(eventsPath, brokenPath);
+    await rename(backupPath, eventsPath);
+    await assert.doesNotReject(invoke("agent_start", {}, ctx));
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(errors.some((message) => message.includes("完成运行诊断失败")), true);
+  assert.equal(notifications.some((message) => message.includes("完成运行诊断失败")), true);
+  const events = (await readFile(eventsPath, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as ReviewEvent);
+  assert.equal(events.filter((event) => event.type === "run_started").length, 2);
 });
 
 test("活跃 run 含损坏 JSONL 行时仍生成报告并提示跳过", async () => {
@@ -199,7 +226,7 @@ test("活跃 run 含损坏 JSONL 行时仍生成报告并提示跳过", async ()
   await invoke("agent_start", {}, ctx);
   await appendFile(join(cwd, ".pi", "run-review", "events.jsonl"), "{broken-json\n", "utf8");
   await assert.doesNotReject(invoke("agent_settled", {}, ctx));
-  assert.equal(notifications.some((message) => message.includes("跳过了 1 条")), true);
+  await waitFor(() => notifications.some((message) => message.includes("跳过了 1 条")), "损坏事件警告未异步显示");
   const reportsDir = join(cwd, ".pi", "run-review", "reports");
   await waitFor(() => hasJsonReport(reportsDir), "损坏 JSONL 后未生成报告");
   assert.equal((await readdir(reportsDir)).some((file) => file.endsWith(".json")), true);
@@ -249,7 +276,8 @@ test("agent_end 不关闭 run，后续事件保留到 agent_settled 才生成报
   const reportsDir = join(cwd, ".pi", "run-review", "reports");
   assert.equal(await hasJsonReport(reportsDir), false);
   await invoke("agent_settled", {}, ctx);
-  assert.equal(notifications.some((message) => message.includes("报告生成已排队")), true);
+  assert.equal(notifications.some((message) => message.includes("报告生成已排队")), false);
+  await waitFor(() => notifications.some((message) => message.includes("报告生成已排队")), "settled 摘要未在后台生成");
   await waitFor(() => hasJsonReport(reportsDir), "agent_settled 后未异步生成报告");
 
   const events = (await readFile(join(cwd, ".pi", "run-review", "events.jsonl"), "utf8"))
@@ -258,6 +286,7 @@ test("agent_end 不关闭 run，后续事件保留到 agent_settled 才生成报
   const messageIndex = events.findIndex((event) => event.type === "message");
   const settledIndex = events.findIndex((event) => event.type === "run_ended");
   assert.equal(agentEndIndex >= 0 && messageIndex > agentEndIndex && settledIndex > messageIndex, true);
+  assert.equal(events[settledIndex]?.runId, events[agentEndIndex]?.runId);
 });
 
 test("单 run 事件上限省略后续事件、只警告一次并保留 run_ended", async () => {
@@ -328,4 +357,38 @@ test("run-review explain 追加解释事件且不改变原 run 统计和规则�
   assert.equal(afterEvents.at(-1)?.type, "analysis");
   assert.equal(afterEvents.at(-1)?.runId, before.run.runId);
   assert.equal(notifications.some((message) => message.includes('"explanation"')), true);
+});
+
+test("run-review 读取损坏报告时仅提示警告", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-command-corrupt-"));
+  const { invoke, invokeCommand, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  await invoke("session_start", {}, ctx);
+  await invoke("agent_start", {}, ctx);
+  await invoke("agent_settled", {}, ctx);
+  const reportsDir = join(cwd, ".pi", "run-review", "reports");
+  await waitFor(async () => {
+    try {
+      return (await readdir(reportsDir)).some((file) => file.endsWith(".html"));
+    } catch {
+      return false;
+    }
+  }, "基础报告未完整生成");
+  const reportFile = (await readdir(reportsDir)).find((file) => file.endsWith(".json"));
+  assert.ok(reportFile);
+  await writeFile(join(reportsDir, reportFile), "{broken-json", "utf8");
+
+  await assert.doesNotReject(invokeCommand("run-review", "--format json", ctx));
+  assert.equal(notifications.some((message) => message.includes("读取 run-review 报告失败")), true);
+});
+
+test("run-diff 读取损坏评测汇总时仅提示警告", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-run-review-extension-diff-corrupt-"));
+  const { invokeCommand, notifications } = createExtensionHarness();
+  const ctx = context(cwd, notifications);
+  const summaryPath = join(cwd, "broken-summary.json");
+  await writeFile(summaryPath, "{broken-json", "utf8");
+
+  await assert.doesNotReject(invokeCommand("run-diff", "baseline candidate --file broken-summary.json", ctx));
+  assert.equal(notifications.some((message) => message.includes("读取 run-diff 报告失败")), true);
 });

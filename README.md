@@ -18,13 +18,36 @@ npm test
 npm run typecheck
 ```
 
-## 在 pi 中试用
+## 安装
+
+从本地仓库安装：
+
+```powershell
+pi install D:\path\to\pi-plugins
+```
+
+也可以从 GitHub 安装：
+
+```powershell
+pi install git:github.com/bxqbxq/Pi-Agent-Run-Observatory
+```
+
+安装后正常启动 `pi` 即会加载扩展。交互模式中执行 `/reload` 可重新加载已安装的扩展；开发时也可以不安装，直接临时加载当前源码：
 
 ```powershell
 pi -e ./extensions/run-review.ts
 ```
 
-项目内自动加载时，将扩展放在 `.pi/extensions/`，或通过 package 的 `pi.extensions` 配置加载。
+`pi -e` 仅适合快速试用；需要验证热加载时，应使用上述 package 安装方式，或将扩展放入 `.pi/extensions/` 自动发现目录。卸载本地或 Git package 时，向 `pi remove` 传入安装时使用的同一来源：
+
+```powershell
+pi remove D:\path\to\pi-plugins
+pi remove git:github.com/bxqbxq/Pi-Agent-Run-Observatory
+```
+
+本仓库已在 Windows + pi 0.84.2 上验证本地路径安装、`/reload` 和卸载；GitHub 安装命令遵循 pi package 标准格式，未纳入离线测试。
+
+## 使用
 
 运行结束后，报告默认写入 `.pi/run-review/reports/`，原始脱敏事件写入 `.pi/run-review/events.jsonl`。交互模式中可执行：
 

@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { analyzeRun } from "../src/analyzer.js";
 import { parseRunReviewConfig, type RunReviewConfig as Config } from "../src/config.js";
 import { compareEvalConfigs, findLatestEvalSummary, readEvalSummary } from "../src/diff.js";
@@ -123,8 +123,16 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
   let lastMarkdown = "";
   let config: Config = {};
   const pendingWarnings: string[] = [];
-  const flushPendingWarnings = (ctx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1]): void => {
+  const flushPendingWarnings = (ctx: ExtensionContext): void => {
     for (const warning of pendingWarnings.splice(0)) ctx.ui.notify(warning, "warning");
+  };
+  const notifyBackgroundWarning = (ctx: ExtensionContext, warning: string): void => {
+    console.error(warning);
+    try {
+      ctx.ui.notify(warning, "warning");
+    } catch {
+      pendingWarnings.push(warning);
+    }
   };
   const appendToRun = (run: ActiveRun, event: ReviewEvent, force = false, notifyWarning?: (message: string) => void): Promise<void> => {
     if (!force && run.eventCount >= run.maxEvents) {
@@ -290,7 +298,7 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
     }), (message) => ctx.ui.notify(message, "warning"));
   });
 
-  const writeRunReports = async (finished: ActiveRun, report: ReturnType<typeof analyzeRun>, jsonPath: string): Promise<void> => {
+  const writeRunReports = async (finished: ActiveRun, report: ReturnType<typeof analyzeRun>, jsonPath: string, ctx: ExtensionContext): Promise<void> => {
     try {
       await mkdir(finished.reportDir, { recursive: true });
       await writeReport(jsonPath, report);
@@ -300,35 +308,45 @@ export default function runReviewExtension(pi: ExtensionAPI): void {
       lastMarkdown = renderMarkdown(report);
     } catch (error) {
       const warning = `pi-run-review 生成报告失败：${String(error)}`;
-      console.error(warning);
-      pendingWarnings.push(warning);
+      notifyBackgroundWarning(ctx, warning);
     }
   };
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  const finalizeRun = async (finished: ActiveRun, runEnded: ReviewEvent, ctx: ExtensionContext): Promise<void> => {
+    try {
+      await appendToRun(finished, runEnded, true, (message) => ctx.ui.notify(message, "warning"));
+      const invalidEventLines: number[] = [];
+      const events = await readEvents(finished.eventsPath, { onInvalidLine: (issue) => invalidEventLines.push(issue.lineNumber) });
+      if (invalidEventLines.length) {
+        ctx.ui.notify(`pi-run-review 跳过了 ${invalidEventLines.length} 条损坏或不兼容事件（行 ${invalidEventLines.join(", ")}）。`, "warning");
+      }
+      const report = analyzeRun(events.filter((event) => event.runId === finished.summary.runId), finished.summary, {
+        duplicateWindow: finished.config.duplicateWindow,
+        duplicateThreshold: finished.config.duplicateThreshold,
+        recoveryWindow: finished.config.recoveryWindow,
+        verificationCommands: finished.config.verificationCommands,
+      });
+      const jsonPath = join(finished.reportDir, `${finished.summary.runId}.json`);
+      if (finished.config.autoSummary !== false) {
+        ctx.ui.notify(`${report.outcome.status}：${report.findings.length} 个问题，报告生成已排队：${jsonPath}`, report.outcome.status === "failed" ? "warning" : "info");
+      }
+      await writeRunReports(finished, report, jsonPath, ctx);
+    } catch (error) {
+      notifyBackgroundWarning(ctx, `pi-run-review 完成运行诊断失败：${String(error)}`);
+    }
+  };
+
+  pi.on("agent_settled", (_event, ctx) => {
     if (!active) return;
     const finished = active;
     finished.summary.settledAt = now();
     finished.summary.durationMs = new Date(finished.summary.settledAt).getTime() - new Date(finished.summary.startedAt).getTime();
-    const runEnded = makeEvent("run_ended", { durationMs: finished.summary.durationMs });
-    active = undefined;
-    await appendToRun(finished, runEnded, true, (message) => ctx.ui.notify(message, "warning"));
-    const invalidEventLines: number[] = [];
-    const events = await readEvents(finished.eventsPath, { onInvalidLine: (issue) => invalidEventLines.push(issue.lineNumber) });
-    if (invalidEventLines.length) {
-      ctx.ui.notify(`pi-run-review 跳过了 ${invalidEventLines.length} 条损坏或不兼容事件（行 ${invalidEventLines.join(", ")}）。`, "warning");
-    }
-    const report = analyzeRun(events.filter((event) => event.runId === finished.summary.runId), finished.summary, {
-      duplicateWindow: finished.config.duplicateWindow,
-      duplicateThreshold: finished.config.duplicateThreshold,
-      recoveryWindow: finished.config.recoveryWindow,
-      verificationCommands: finished.config.verificationCommands,
+    const runEnded = makeEvent("run_ended", { durationMs: finished.summary.durationMs }, {
+      runId: finished.summary.runId,
+      sessionId: finished.summary.sessionId,
     });
-    const jsonPath = join(finished.reportDir, `${finished.summary.runId}.json`);
-    if (finished.config.autoSummary !== false) {
-      ctx.ui.notify(`${report.outcome.status}：${report.findings.length} 个问题，报告生成已排队：${jsonPath}`, report.outcome.status === "failed" ? "warning" : "info");
-    }
-    void writeRunReports(finished, report, jsonPath);
+    active = undefined;
+    void finalizeRun(finished, runEnded, ctx);
   });
 
   pi.registerCommand("run-review", {
