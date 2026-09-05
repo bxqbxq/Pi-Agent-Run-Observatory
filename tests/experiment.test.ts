@@ -138,12 +138,16 @@ test("实验指纹不受对象字段插入顺序影响", () => {
 });
 
 test("仓库中的预注册实验可从归档汇总重算结论", async () => {
-  for (const id of ["bounded-mean", "allocate-by-weight"]) {
+  const expected = {
+    "bounded-mean": "inconclusive",
+    "allocate-by-weight": "inconclusive",
+    "allocate-extreme-weights": "reject",
+  } as const;
+  for (const [id, decision] of Object.entries(expected)) {
     const plan = parseExperimentPlan(JSON.parse(await readFile(join(process.cwd(), "eval", "experiments", `${id}-plan.json`), "utf8")));
     const summary = await readEvalSummary(join(process.cwd(), "eval", "experiments", `${id}-result.json`));
     const assessment = assessExperiment(plan, summary);
-    assert.equal(assessment.decision, "inconclusive");
-    assert.match(assessment.reason, /区分度/);
+    assert.equal(assessment.decision, decision);
     const archived = JSON.parse(await readFile(join(process.cwd(), "eval", "experiments", `${id}-result.json`), "utf8"));
     assert.equal(archived.assessment.decision, assessment.decision);
     assert.equal(archived.assessment.reason, assessment.reason);
